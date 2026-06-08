@@ -111,6 +111,25 @@ def has_credentials() -> bool:
     return all(c[k] for k in ("R2_ACCESS_KEY", "R2_SECRET_KEY", "R2_ENDPOINT"))
 
 
+_BUCKET_FILE = Path(__file__).parent / ".r2_bucket"
+
+
+def save_last_bucket(bucket: str) -> None:
+    """Persist the last-used bucket name to a local file."""
+    try:
+        _BUCKET_FILE.write_text(bucket.strip(), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_last_bucket() -> str:
+    """Return the last-used bucket name, or empty string if none saved."""
+    try:
+        return _BUCKET_FILE.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
 # ─── Color theme ──────────────────────────────────────────────────────────────
 C = {
     "bg":        "#1a1b26",
@@ -742,6 +761,11 @@ class R2ManagerApp(tk.Tk):
         self._r2 = R2Manager(ak, sk, ep)
         host = ep.split("//", 1)[-1].split("/")[0]
         self._set_status(f"✓ Connected  –  {host}")
+        # Restore last-used bucket if none already set in the UI
+        if not self._current_bucket.get().strip():
+            saved = load_last_bucket()
+            if saved:
+                self._current_bucket.set(saved)
         if self._current_bucket.get().strip():
             self._do_refresh()
 
@@ -932,13 +956,14 @@ class R2ManagerApp(tk.Tk):
         def _run():
             try:
                 files = self._r2.list_all_files(bucket)
-                self.after(0, lambda: self._on_refresh_done(files))
+                self.after(0, lambda: self._on_refresh_done(files, bucket))
             except Exception as exc:
                 self.after(0, lambda e=exc: self._on_error("Refresh Error", e))
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _on_refresh_done(self, files: list):
+    def _on_refresh_done(self, files: list, bucket: str):
+        save_last_bucket(bucket)   # persist on successful load
         self._all_files = files
         self._populate_folder_tree()
         self._populate_file_list()
