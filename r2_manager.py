@@ -16,6 +16,7 @@ import threading
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import quote as _urlquote
 
 # ─── Ensure dependencies are installed ───────────────────────────────────────
 def _ensure_pkg(pkg, import_name=None):
@@ -132,23 +133,26 @@ def load_last_bucket() -> str:
 
 # ─── Color theme ──────────────────────────────────────────────────────────────
 C = {
-    "bg":        "#1a1b26",
-    "sidebar":   "#16161e",
-    "panel":     "#1f2335",
-    "toolbar":   "#1e1f2e",
-    "selected":  "#2f334d",
-    "hover":     "#292e42",
-    "fg":        "#c0caf5",
-    "fg2":       "#7982a9",
-    "accent":    "#7aa2f7",
-    "green":     "#9ece6a",
-    "red":       "#f7768e",
-    "yellow":    "#e0af68",
-    "border":    "#292e42",
-    "input_bg":  "#24283b",
-    "btn_bg":    "#2f334d",
-    "btn_hover": "#3b4261",
-    "progress":  "#7aa2f7",
+    "bg":        "#f0f7f4",   # 主背景：浅薄荷绿
+    "sidebar":   "#dff0e8",   # 侧边栏：柔和绿
+    "panel":     "#f7fdf9",   # 内容面板：近白
+    "toolbar":   "#e8f5ee",   # 工具栏
+    "selected":  "#b7dfc9",   # 选中行
+    "hover":     "#cceedd",   # 悬停
+    "fg":        "#1a3a2a",   # 主文字：深绿黑
+    "fg2":       "#5a8a6a",   # 次要文字
+    "accent":    "#2e9e6a",   # 强调色：中绿
+    "accent2":   "#1b7a50",   # 强调色深
+    "green":     "#27ae60",   # 操作绿
+    "red":       "#e05c5c",   # 危险红
+    "yellow":    "#d4870a",   # 文件夹黄
+    "border":    "#b0d8c0",   # 边框
+    "input_bg":  "#ffffff",   # 输入框
+    "btn_bg":    "#d0eedd",   # 按钮背景
+    "btn_hover": "#b0d8c0",   # 按钮悬停
+    "progress":  "#2e9e6a",   # 进度条
+    "hdr_bg":    "#2e9e6a",   # 标题栏渐变起始
+    "row_alt":   "#edf8f2",   # 表格交替行
 }
 
 FONT   = ("Segoe UI", 9)
@@ -180,13 +184,24 @@ class R2Manager:
         k = self._sign(k, "s3")
         return self._sign(k, "aws4_request")
 
+    @staticmethod
+    def _encode_key(key: str) -> str:
+        """
+        Percent-encode an object key for use in both the canonical URI and the
+        request URL.  Each path segment is encoded per RFC 3986 (unreserved chars
+        A-Z a-z 0-9 - _ . ~ are kept; '/' is preserved as the segment separator).
+        This is required by AWS SigV4 for non-ASCII characters such as Chinese.
+        """
+        return "/".join(_urlquote(seg, safe="") for seg in key.split("/"))
+
     def _auth_headers(self, method: str, bucket: str, key: str = "") -> dict:
         """Build minimal AWS SigV4 Authorization headers for the given request."""
         host       = self.endpoint.split("://", 1)[-1]
         now        = datetime.datetime.now(datetime.timezone.utc)
         amz_date   = now.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = now.strftime("%Y%m%d")
-        uri        = f"/{bucket}/{key}" if key else f"/{bucket}/"
+        enc_key    = self._encode_key(key)
+        uri        = f"/{bucket}/{enc_key}" if key else f"/{bucket}/"
         ph         = hashlib.sha256(b"").hexdigest()  # empty payload
 
         canonical_headers = (
@@ -260,7 +275,8 @@ class R2Manager:
         now        = datetime.datetime.now(datetime.timezone.utc)
         amz_date   = now.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = now.strftime("%Y%m%d")
-        uri        = f"/{bucket}/{key}"
+        enc_key    = self._encode_key(key)
+        uri        = f"/{bucket}/{enc_key}"
 
         canonical_headers = (
             f"content-type:{content_type}\n"
@@ -328,13 +344,13 @@ class R2Manager:
             content_type = get_content_type(local_path)
         except Exception:
             content_type = "application/octet-stream"
-        url     = f"{self.endpoint}/{bucket}/{r2_key}"
+        url     = f"{self.endpoint}/{bucket}/{self._encode_key(r2_key)}"
         headers = self._auth_headers_put(bucket, r2_key, payload_hash, content_type)
         resp    = requests.put(url, headers=headers, data=data, timeout=120)
         self._raise_for_status(resp, "upload")
 
     def download_file(self, bucket: str, r2_key: str, local_path: str) -> None:
-        url     = f"{self.endpoint}/{bucket}/{r2_key}"
+        url     = f"{self.endpoint}/{bucket}/{self._encode_key(r2_key)}"
         headers = self._auth_headers("GET", bucket, r2_key)
         resp    = requests.get(url, headers=headers, timeout=120, stream=True)
         self._raise_for_status(resp, "download")
@@ -343,10 +359,21 @@ class R2Manager:
                 fh.write(chunk)
 
     def delete_file(self, bucket: str, r2_key: str) -> None:
-        url     = f"{self.endpoint}/{bucket}/{r2_key}"
+        url     = f"{self.endpoint}/{bucket}/{self._encode_key(r2_key)}"
         headers = self._auth_headers("DELETE", bucket, r2_key)
         resp    = requests.delete(url, headers=headers, timeout=30)
         self._raise_for_status(resp, "delete")
+
+    def create_folder(self, bucket: str, folder_key: str) -> None:
+        """Create a virtual folder by uploading a zero-byte placeholder object."""
+        if not folder_key.endswith("/"):
+            folder_key += "/"
+        payload_hash = hashlib.sha256(b"").hexdigest()
+        url     = f"{self.endpoint}/{bucket}/{self._encode_key(folder_key)}"
+        headers = self._auth_headers_put(bucket, folder_key, payload_hash,
+                                         "application/x-directory")
+        resp    = requests.put(url, headers=headers, data=b"", timeout=30)
+        self._raise_for_status(resp, "mkdir")
 
 
 # ─── Setup / Credentials Dialog ───────────────────────────────────────────────
@@ -370,19 +397,20 @@ class SetupDialog(tk.Toplevel):
         parent.wait_window(self)
 
     def _build(self):
-        # Accent top bar
-        tk.Frame(self, bg=C["accent"], height=4).pack(fill="x")
-
-        # Title
+        # Gradient-style top bar
+        top = tk.Frame(self, bg=C["accent"], height=56)
+        top.pack(fill="x")
+        top.pack_propagate(False)
         tk.Label(
-            self, text="☁  Connect to Cloudflare R2",
-            bg=C["bg"], fg=C["accent"], font=("Segoe UI", 14, "bold"),
-        ).pack(pady=(20, 2))
+            top, text="☁  连接 Cloudflare R2",
+            bg=C["accent"], fg="#ffffff", font=("Segoe UI", 14, "bold"),
+        ).pack(pady=14)
+
         tk.Label(
             self,
-            text="Credentials are saved as user environment variables.\nThey are never written to any file on disk.",
+            text="凭证以用户环境变量形式保存，不会写入任何磁盘文件。",
             bg=C["bg"], fg=C["fg2"], font=FONT_S, justify="center",
-        ).pack(pady=(0, 16))
+        ).pack(pady=(14, 4))
 
         frm = tk.Frame(self, bg=C["bg"])
         frm.pack(padx=36, fill="x")
@@ -420,16 +448,17 @@ class SetupDialog(tk.Toplevel):
         btn_frame = tk.Frame(self, bg=C["bg"])
         btn_frame.pack(pady=24)
         tk.Button(
-            btn_frame, text="  Connect  ", command=self._save,
+            btn_frame, text="  ✔  连接  ", command=self._save,
             bg=C["accent"], fg="#ffffff", font=FONT_B,
             relief="flat", cursor="hand2", padx=16, pady=8,
-            activebackground=C["btn_hover"], activeforeground="#ffffff",
+            activebackground=C["accent2"], activeforeground="#ffffff",
             bd=0,
         ).pack(side="left", padx=8)
         tk.Button(
-            btn_frame, text="  Cancel  ", command=self.destroy,
+            btn_frame, text="  取消  ", command=self.destroy,
             bg=C["btn_bg"], fg=C["fg2"], font=FONT,
             relief="flat", cursor="hand2", padx=16, pady=8,
+            activebackground=C["btn_hover"], activeforeground=C["fg"],
             bd=0,
         ).pack(side="left", padx=8)
 
@@ -493,45 +522,46 @@ class R2ManagerApp(tk.Tk):
         st.theme_use("clam")
         st.configure(".",
             background=C["bg"], foreground=C["fg"], font=FONT,
-            troughcolor=C["bg"], borderwidth=0,
+            troughcolor=C["border"], borderwidth=0,
         )
         st.configure("Treeview",
             background=C["panel"], foreground=C["fg"],
-            fieldbackground=C["panel"], rowheight=26,
+            fieldbackground=C["panel"], rowheight=28,
             borderwidth=0, relief="flat",
         )
         st.configure("Treeview.Heading",
-            background=C["sidebar"], foreground=C["fg2"],
-            font=FONT_B, relief="flat",
+            background=C["sidebar"], foreground=C["accent2"],
+            font=FONT_B, relief="flat", padding=(8, 5),
         )
         st.map("Treeview",
             background=[("selected", C["selected"])],
-            foreground=[("selected", C["accent"])],
+            foreground=[("selected", C["accent2"])],
         )
         st.configure("Vertical.TScrollbar",
-            background=C["sidebar"], troughcolor=C["bg"],
-            arrowcolor=C["fg2"], borderwidth=0, width=10,
+            background=C["btn_bg"], troughcolor=C["bg"],
+            arrowcolor=C["fg2"], borderwidth=0, width=8,
         )
         st.configure("Horizontal.TScrollbar",
-            background=C["sidebar"], troughcolor=C["bg"],
-            arrowcolor=C["fg2"], borderwidth=0, height=10,
+            background=C["btn_bg"], troughcolor=C["bg"],
+            arrowcolor=C["fg2"], borderwidth=0, height=8,
         )
         st.configure("TCombobox",
             background=C["input_bg"], foreground=C["fg"],
             selectbackground=C["selected"],
             fieldbackground=C["input_bg"],
-            arrowcolor=C["fg2"],
+            arrowcolor=C["accent"],
         )
         st.configure("TProgressbar",
-            background=C["progress"], troughcolor=C["bg"],
+            background=C["progress"], troughcolor=C["border"],
         )
+        st.configure("TSeparator", background=C["border"])
 
     # ── Menu bar ─────────────────────────────────────────────────────────────
 
     def _build_menubar(self):
         mk = {
-            "bg": C["sidebar"], "fg": C["fg"],
-            "activebackground": C["selected"], "activeforeground": C["accent"],
+            "bg": C["panel"], "fg": C["fg"],
+            "activebackground": C["selected"], "activeforeground": C["accent2"],
             "relief": "flat",
         }
         mb = tk.Menu(self, **mk)
@@ -557,70 +587,92 @@ class R2ManagerApp(tk.Tk):
     # ── Header ────────────────────────────────────────────────────────────────
 
     def _build_header(self):
-        hdr = tk.Frame(self, bg=C["sidebar"], height=54)
+        hdr = tk.Frame(self, bg=C["hdr_bg"], height=58)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
 
+        # Logo + title
+        logo_frm = tk.Frame(hdr, bg=C["hdr_bg"])
+        logo_frm.pack(side="left", padx=(18, 0))
         tk.Label(
-            hdr, text="☁  R2 Manager",
-            bg=C["sidebar"], fg=C["accent"], font=("Segoe UI", 14, "bold"),
-        ).pack(side="left", padx=18)
+            logo_frm, text="☁",
+            bg=C["hdr_bg"], fg="#ffffff", font=("Segoe UI", 20),
+        ).pack(side="left", padx=(0, 6))
+        tk.Label(
+            logo_frm, text="R2 Manager",
+            bg=C["hdr_bg"], fg="#ffffff", font=("Segoe UI", 14, "bold"),
+        ).pack(side="left")
 
-        right = tk.Frame(hdr, bg=C["sidebar"])
+        right = tk.Frame(hdr, bg=C["hdr_bg"])
         right.pack(side="right", padx=18)
 
-        tk.Label(right, text="Bucket:", bg=C["sidebar"],
-                 fg=C["fg2"], font=FONT).pack(side="left", padx=(0, 6))
+        tk.Label(right, text="Bucket:", bg=C["hdr_bg"],
+                 fg="#d0f0e0", font=FONT).pack(side="left", padx=(0, 6))
 
+        # Combobox with rounded look via Frame border
+        cb_wrap = tk.Frame(right, bg="#ffffff", padx=1, pady=1)
+        cb_wrap.pack(side="left")
         self._bucket_entry = ttk.Combobox(
-            right, textvariable=self._current_bucket, width=24, font=FONT,
+            cb_wrap, textvariable=self._current_bucket, width=24, font=FONT,
         )
-        self._bucket_entry.pack(side="left")
-        self._bucket_entry.bind("<Return>",           lambda _: self._do_refresh())
+        self._bucket_entry.pack()
+        self._bucket_entry.bind("<Return>",             lambda _: self._do_refresh())
         self._bucket_entry.bind("<<ComboboxSelected>>", lambda _: self._do_refresh())
 
-        self._mk_icon_btn(right, "⚙", self._open_settings,
-                          fg=C["fg2"], font=("Segoe UI", 13)).pack(side="left", padx=(10, 0))
+        tk.Button(
+            right, text="⚙", command=self._open_settings,
+            bg=C["hdr_bg"], fg="#d0f0e0", font=("Segoe UI", 14),
+            relief="flat", cursor="hand2", bd=0,
+            activebackground=C["accent2"], activeforeground="#ffffff",
+        ).pack(side="left", padx=(12, 0))
 
     # ── Toolbar ───────────────────────────────────────────────────────────────
 
     def _build_toolbar(self):
-        bar = tk.Frame(self, bg=C["toolbar"], height=46)
+        bar = tk.Frame(self, bg=C["toolbar"], height=48)
         bar.pack(fill="x")
         bar.pack_propagate(False)
+        # Bottom border
+        tk.Frame(self, bg=C["border"], height=1).pack(fill="x")
 
-        tk.Frame(bar, bg=C["border"], width=1).pack(
-            side="left", fill="y", padx=(14, 0), pady=6)
+        def _tb_btn(text, cmd, bg_color, fg_color):
+            """Pill-style toolbar button."""
+            f = tk.Frame(bar, bg=bg_color, padx=0, pady=0)
+            b = tk.Button(
+                f, text=text, command=cmd,
+                bg=bg_color, fg=fg_color, font=FONT_B,
+                relief="flat", cursor="hand2", padx=14, pady=4, bd=0,
+                activebackground=C["btn_hover"], activeforeground=fg_color,
+            )
+            b.pack()
+            return f
 
         items = [
-            ("⬆  Upload",   self._do_upload,   C["accent"]),
-            ("⬇  Download", self._do_download, C["green"]),
-            ("🗑  Delete",   self._do_delete,   C["red"]),
+            ("⬆  上传",  self._do_upload,   "#2e9e6a", "#ffffff"),
+            ("⬇  下载",  self._do_download, "#27ae60", "#ffffff"),
+            ("🗑  删除",  self._do_delete,   "#e05c5c", "#ffffff"),
             None,
-            ("↑  Up",        self._go_up,       C["fg2"]),
-            ("🔄  Refresh",  self._do_refresh,  C["fg2"]),
+            ("📁  新建文件夹", self._do_mkdir,  C["btn_bg"],  C["fg"]),
+            ("↑  返回上级", self._go_up,       C["btn_bg"],  C["fg"]),
+            ("🔄  刷新",   self._do_refresh,  C["btn_bg"],  C["fg"]),
         ]
         for item in items:
             if item is None:
                 tk.Frame(bar, bg=C["border"], width=1).pack(
-                    side="left", fill="y", padx=8, pady=8)
+                    side="left", fill="y", padx=6, pady=10)
                 continue
-            text, cmd, color = item
-            btn = tk.Button(
-                bar, text=text, command=cmd,
-                bg=C["toolbar"], fg=color, font=FONT_B,
-                relief="flat", cursor="hand2", padx=12, bd=0,
-                activebackground=C["btn_hover"], activeforeground=color,
-            )
-            btn.pack(side="left", padx=2, pady=7)
+            text, cmd, bg, fg = item
+            _tb_btn(text, cmd, bg, fg).pack(side="left", padx=4, pady=8)
 
         # Progress bar (hidden by default)
         self._progress_var = tk.DoubleVar()
+        prog_wrap = tk.Frame(bar, bg=C["toolbar"])
+        prog_wrap.pack(side="right", padx=14)
         self._progress = ttk.Progressbar(
-            bar, variable=self._progress_var, maximum=100,
-            style="TProgressbar", length=140,
+            prog_wrap, variable=self._progress_var, maximum=100,
+            style="TProgressbar", length=160,
         )
-        self._progress.pack(side="right", padx=14, pady=12)
+        self._progress.pack(pady=14)
         self._progress.pack_forget()
 
     # ── Body ──────────────────────────────────────────────────────────────────
@@ -634,13 +686,17 @@ class R2ManagerApp(tk.Tk):
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
 
+        # Folder panel header
+        folder_hdr = tk.Frame(left, bg=C["accent"], height=30)
+        folder_hdr.pack(fill="x")
+        folder_hdr.pack_propagate(False)
         tk.Label(
-            left, text="  Folders", bg=C["sidebar"], fg=C["fg2"],
+            folder_hdr, text="  📂 目录", bg=C["accent"], fg="#ffffff",
             font=FONT_B, anchor="w",
-        ).pack(fill="x", pady=(10, 4))
+        ).pack(fill="x", padx=8, pady=4)
 
         tree_frame = tk.Frame(left, bg=C["sidebar"])
-        tree_frame.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+        tree_frame.pack(fill="both", expand=True, padx=4, pady=(4, 6))
 
         self._folder_tree = ttk.Treeview(tree_frame, show="tree", selectmode="browse")
         fsb = ttk.Scrollbar(tree_frame, orient="vertical",
@@ -661,13 +717,14 @@ class R2ManagerApp(tk.Tk):
         crumb = tk.Frame(right, bg=C["sidebar"])
         crumb.pack(fill="x")
         tk.Label(
-            crumb, text="Path:", bg=C["sidebar"], fg=C["fg2"], font=FONT_S,
-        ).pack(side="left", padx=(12, 4), pady=4)
+            crumb, text="📍", bg=C["sidebar"], fg=C["accent"], font=FONT,
+        ).pack(side="left", padx=(12, 2), pady=5)
         self._path_var = tk.StringVar(value="/")
         tk.Label(
             crumb, textvariable=self._path_var,
-            bg=C["sidebar"], fg=C["accent"], font=FONT_S, anchor="w",
-        ).pack(side="left", pady=4)
+            bg=C["sidebar"], fg=C["accent2"], font=("Segoe UI", 9, "bold"), anchor="w",
+        ).pack(side="left", pady=5)
+        tk.Frame(right, bg=C["border"], height=1).pack(fill="x")
 
         # File treeview
         cols = ("name", "size", "type", "modified")
@@ -675,10 +732,10 @@ class R2ManagerApp(tk.Tk):
             right, columns=cols, show="headings", selectmode="extended",
         )
         for col, heading, width, anchor in [
-            ("name",     "Name",          350, "w"),
-            ("size",     "Size",           90, "e"),
-            ("type",     "Type",           70, "w"),
-            ("modified", "Last Modified", 190, "w"),
+            ("name",     "  文件名",       360, "w"),
+            ("size",     "大小",            90, "e"),
+            ("type",     "类型",            70, "center"),
+            ("modified", "修改时间",        190, "w"),
         ]:
             self._file_list.heading(
                 col, text=heading, anchor=anchor,
@@ -693,9 +750,9 @@ class R2ManagerApp(tk.Tk):
         hsb.pack(side="bottom", fill="x")
         self._file_list.pack(fill="both", expand=True)
 
-        self._file_list.tag_configure("folder", foreground=C["yellow"])
+        self._file_list.tag_configure("folder", foreground=C["yellow"], font=FONT_B)
         self._file_list.tag_configure("even",   background=C["panel"])
-        self._file_list.tag_configure("odd",    background="#1e2030")
+        self._file_list.tag_configure("odd",    background=C["row_alt"])
 
         self._file_list.bind("<Double-1>",  self._on_file_double_click)
         self._file_list.bind("<Button-3>",  self._show_context_menu)
@@ -704,8 +761,8 @@ class R2ManagerApp(tk.Tk):
 
         # Context menu
         mk = {
-            "bg": C["sidebar"], "fg": C["fg"],
-            "activebackground": C["selected"], "activeforeground": C["accent"],
+            "bg": C["panel"], "fg": C["fg"],
+            "activebackground": C["selected"], "activeforeground": C["accent2"],
             "relief": "flat",
         }
         self._ctx = tk.Menu(self, tearoff=0, **mk)
@@ -717,13 +774,16 @@ class R2ManagerApp(tk.Tk):
     # ── Status bar ────────────────────────────────────────────────────────────
 
     def _build_statusbar(self):
-        bar = tk.Frame(self, bg=C["sidebar"], height=26)
+        tk.Frame(self, bg=C["border"], height=1).pack(fill="x", side="bottom")
+        bar = tk.Frame(self, bg=C["sidebar"], height=28)
         bar.pack(fill="x", side="bottom")
         bar.pack_propagate(False)
+        # Green left indicator strip
+        tk.Frame(bar, bg=C["accent"], width=4).pack(side="left", fill="y")
         tk.Label(
             bar, textvariable=self._status_text,
             bg=C["sidebar"], fg=C["fg2"], font=FONT_S, anchor="w",
-        ).pack(side="left", padx=12)
+        ).pack(side="left", padx=10)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -731,11 +791,11 @@ class R2ManagerApp(tk.Tk):
     def _mk_icon_btn(parent, text, cmd, fg=None, font=None, **kw) -> tk.Button:
         return tk.Button(
             parent, text=text, command=cmd,
-            bg=C["sidebar"], fg=fg or C["fg2"],
+            bg=C["hdr_bg"], fg=fg or C["fg2"],
             font=font or FONT,
             relief="flat", cursor="hand2", bd=0,
-            activebackground=C["sidebar"],
-            activeforeground=C["accent"],
+            activebackground=C["accent2"],
+            activeforeground="#ffffff",
             **kw,
         )
 
@@ -851,8 +911,9 @@ class R2ManagerApp(tk.Tk):
 
         total = len(root_keys) + len(sub_dirs)
         bucket = self._current_bucket.get()
+        total_size = _fmt_size(sum(f["size"] for f in self._all_files))
         self._set_status(
-            f"Bucket: {bucket}  |  {len(self._all_files)} total objects  "
+            f"Bucket: {bucket}  |  {len(self._all_files)} objects  {total_size}  "
             f"|  {total} items in  /{prefix}"
         )
         self._path_var.set("/" + prefix)
@@ -1037,6 +1098,75 @@ class R2ManagerApp(tk.Tk):
             self.after(0, lambda: self._show_progress(False))
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _do_mkdir(self):
+        if not self._need_connection() or not self._need_bucket():
+            return
+
+        # Modal input dialog
+        dlg = tk.Toplevel(self)
+        dlg.title("新建文件夹")
+        dlg.resizable(False, False)
+        dlg.configure(bg=C["bg"])
+        dlg.grab_set()
+        dlg.update_idletasks()
+        pw = self.winfo_rootx() + self.winfo_width()  // 2
+        ph = self.winfo_rooty() + self.winfo_height() // 2
+        dlg.geometry(f"+{pw - 160}+{ph - 80}")
+
+        tk.Frame(dlg, bg=C["accent"], height=4).pack(fill="x")
+        tk.Label(dlg, text="📁  新建文件夹",
+                 bg=C["bg"], fg=C["accent2"], font=FONT_B).pack(pady=(14, 6))
+        tk.Label(dlg, text="文件夹名称：",
+                 bg=C["bg"], fg=C["fg"], font=FONT, anchor="w").pack(padx=24, fill="x")
+
+        name_var = tk.StringVar()
+        ent = tk.Entry(
+            dlg, textvariable=name_var,
+            bg=C["input_bg"], fg=C["fg"],
+            insertbackground=C["fg"],
+            relief="flat", font=FONT,
+            highlightthickness=1,
+            highlightcolor=C["accent"],
+            highlightbackground=C["border"],
+        )
+        ent.pack(padx=24, pady=(4, 0), fill="x", ipady=6)
+        ent.focus_set()
+
+        def _confirm():
+            raw = name_var.get().strip().strip("/")
+            if not raw:
+                messagebox.showwarning("提示", "请输入文件夹名称。", parent=dlg)
+                return
+            if any(ch in raw for ch in ('\\', '?', '*', ':', '"', '<', '>', '|')):
+                messagebox.showwarning("非法字符", "文件夹名称包含非法字符。", parent=dlg)
+                return
+            dlg.destroy()
+            bucket  = self._current_bucket.get().strip()
+            key     = self._current_prefix + raw + "/"
+            self._set_status(f"创建文件夹 {key}…")
+            def _run():
+                try:
+                    self._r2.create_folder(bucket, key)
+                    self.after(0, lambda: self._set_status(f"文件夹 '{raw}' 创建成功"))
+                    self.after(0, self._do_refresh)
+                except Exception as exc:
+                    self.after(0, lambda e=exc: self._on_error("创建失败", e))
+            threading.Thread(target=_run, daemon=True).start()
+
+        ent.bind("<Return>", lambda _: _confirm())
+        btn_row = tk.Frame(dlg, bg=C["bg"])
+        btn_row.pack(pady=16)
+        tk.Button(btn_row, text="  确定  ", command=_confirm,
+                  bg=C["accent"], fg="#ffffff", font=FONT_B,
+                  relief="flat", cursor="hand2", padx=12, pady=6, bd=0,
+                  activebackground=C["accent2"], activeforeground="#ffffff",
+                  ).pack(side="left", padx=8)
+        tk.Button(btn_row, text="  取消  ", command=dlg.destroy,
+                  bg=C["btn_bg"], fg=C["fg2"], font=FONT,
+                  relief="flat", cursor="hand2", padx=12, pady=6, bd=0,
+                  ).pack(side="left", padx=8)
+        self.wait_window(dlg)
 
     def _do_delete(self):
         if not self._need_connection():
