@@ -1004,6 +1004,16 @@ class R2ManagerApp(tk.Tk):
             if not iid.startswith("__dir__")
         ]
 
+    def _selected_delete_targets(self) -> tuple[list[str], list[str]]:
+        """Return (file_keys, folder_prefixes) for the current selection."""
+        file_keys, folder_prefixes = [], []
+        for iid in self._file_list.selection():
+            if iid.startswith("__dir__"):
+                folder_prefixes.append(iid[len("__dir__"):] + "/")
+            else:
+                file_keys.append(iid)
+        return file_keys, folder_prefixes
+
     # ── Operations ───────────────────────────────────────────────────────────
 
     def _do_refresh(self):
@@ -1171,17 +1181,40 @@ class R2ManagerApp(tk.Tk):
     def _do_delete(self):
         if not self._need_connection():
             return
-        keys = self._selected_file_keys()
-        if not keys:
+        file_keys, folder_prefixes = self._selected_delete_targets()
+        if not file_keys and not folder_prefixes:
             messagebox.showinfo("No Selection",
-                                "Select one or more files to delete.", parent=self)
+                                "Select one or more files or folders to delete.", parent=self)
             return
-        preview = "\n".join(k.split("/")[-1] for k in keys[:6])
-        if len(keys) > 6:
-            preview += f"\n… and {len(keys) - 6} more"
+
+        # Expand each selected folder into the full set of object keys it
+        # contains (including its own placeholder object, if any) so the
+        # whole subtree is removed, not just the folder row.
+        all_keys = set(file_keys)
+        for prefix in folder_prefixes:
+            all_keys.add(prefix)
+            for f in self._all_files:
+                if f["key"].startswith(prefix):
+                    all_keys.add(f["key"])
+        keys = sorted(all_keys)
+        if not keys:
+            return
+
+        names = [k.split("/")[-1] for k in file_keys]
+        names += [p.rstrip("/").split("/")[-1] + "/" for p in folder_prefixes]
+        preview = "\n".join(names[:6])
+        if len(names) > 6:
+            preview += f"\n… and {len(names) - 6} more"
+        folder_note = ""
+        if folder_prefixes:
+            folder_note = (
+                f"\n\nThis includes {len(folder_prefixes)} folder(s), "
+                f"totalling {len(keys)} object(s) to be removed."
+            )
+
         if not messagebox.askyesno(
             "Confirm Delete",
-            f"Permanently delete {len(keys)} file(s)?\n\n{preview}\n\n"
+            f"Permanently delete {len(names)} item(s)?\n\n{preview}{folder_note}\n\n"
             "This action cannot be undone.",
             parent=self,
         ):
@@ -1198,12 +1231,15 @@ class R2ManagerApp(tk.Tk):
                 try:
                     self._r2.delete_file(bucket, key)
                     ok += 1
+                except FileNotFoundError:
+                    # Implicit folder had no placeholder object – nothing to do.
+                    ok += 1
                 except Exception as exc:
                     fail += 1
                     self.after(0, lambda e=exc: messagebox.showerror(
                         "Delete Error", str(e), parent=self))
             self.after(0, lambda: self._set_status(
-                f"Deleted {ok} file(s), {fail} failed"))
+                f"Deleted {ok} object(s), {fail} failed"))
             self.after(0, lambda: self._show_progress(False))
             self.after(0, self._do_refresh)
 
