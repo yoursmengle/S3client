@@ -25,7 +25,7 @@ def _ensure_pkg(pkg, import_name=None):
     try:
         importlib.import_module(name)
     except ImportError:
-        print(f"[r2-manager] Installing {pkg}…")
+        print(f"[r2-manager] 正在安装 {pkg}…")
         subprocess.check_call([sys.executable, "-m", "pip", "install", pkg],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -265,15 +265,15 @@ class R2Manager:
         prefix = f"[{action}] " if action else ""
         if resp.status_code == 403:
             raise PermissionError(
-                f"{prefix}403 Forbidden – {body}\n\n"
-                "Possible causes:\n"
-                "  • Access Key or Secret Key is incorrect\n"
-                "  • Endpoint URL is wrong (must be: https://<account_id>.r2.cloudflarestorage.com)\n"
-                "  • The API token lacks R2 read/write permissions"
+                f"{prefix}403 禁止访问 – {body}\n\n"
+                "可能的原因：\n"
+                "  • 访问密钥（Access Key）或机密访问密钥（Secret Access Key）不正确\n"
+                "  • 端点地址（Endpoint URL）错误（应为：https://<account_id>.r2.cloudflarestorage.com）\n"
+                "  • API 令牌缺少 R2 对象读取或写入权限"
             )
         if resp.status_code == 404:
-            raise FileNotFoundError(f"{prefix}404 Not Found – {body}")
-        raise RuntimeError(f"{prefix}HTTP {resp.status_code} – {body}")
+            raise FileNotFoundError(f"{prefix}404 未找到 – {body}")
+        raise RuntimeError(f"{prefix}HTTP {resp.status_code} 错误 – {body}")
 
     # ── SigV4 upload helpers ─────────────────────────────────────────────────
 
@@ -327,7 +327,7 @@ class R2Manager:
         url      = f"{self.endpoint}/{bucket}/"
         headers  = self._auth_headers("GET", bucket)
         response = requests.get(url, headers=headers, timeout=30)
-        self._raise_for_status(response, "list")
+        self._raise_for_status(response, "列出对象")
         ns    = "{http://s3.amazonaws.com/doc/2006-03-01/}"
         root  = ET.fromstring(response.content)
         files = []
@@ -356,13 +356,13 @@ class R2Manager:
         url     = f"{self.endpoint}/{bucket}/{self._encode_key(r2_key)}"
         headers = self._auth_headers_put(bucket, r2_key, payload_hash, content_type)
         resp    = requests.put(url, headers=headers, data=data, timeout=120)
-        self._raise_for_status(resp, "upload")
+        self._raise_for_status(resp, "上传")
 
     def download_file(self, bucket: str, r2_key: str, local_path: str) -> None:
         url     = f"{self.endpoint}/{bucket}/{self._encode_key(r2_key)}"
         headers = self._auth_headers("GET", bucket, r2_key)
         resp    = requests.get(url, headers=headers, timeout=120, stream=True)
-        self._raise_for_status(resp, "download")
+        self._raise_for_status(resp, "下载")
         with open(local_path, "wb") as fh:
             for chunk in resp.iter_content(chunk_size=65536):
                 fh.write(chunk)
@@ -371,7 +371,7 @@ class R2Manager:
         url     = f"{self.endpoint}/{bucket}/{self._encode_key(r2_key)}"
         headers = self._auth_headers("DELETE", bucket, r2_key)
         resp    = requests.delete(url, headers=headers, timeout=30)
-        self._raise_for_status(resp, "delete")
+        self._raise_for_status(resp, "删除")
 
     def create_folder(self, bucket: str, folder_key: str) -> None:
         """Create a virtual folder by uploading a zero-byte placeholder object."""
@@ -382,7 +382,7 @@ class R2Manager:
         headers = self._auth_headers_put(bucket, folder_key, payload_hash,
                                          "application/x-directory")
         resp    = requests.put(url, headers=headers, data=b"", timeout=30)
-        self._raise_for_status(resp, "mkdir")
+        self._raise_for_status(resp, "新建文件夹")
 
 
 # ─── Setup / Credentials Dialog ───────────────────────────────────────────────
@@ -392,7 +392,7 @@ class SetupDialog(tk.Toplevel):
     def __init__(self, parent, on_save_callback):
         super().__init__(parent)
         self._on_save = on_save_callback
-        self.title("R2 Manager – Connect to Cloudflare R2")
+        self.title("R2 管理器 – 连接 Cloudflare R2")
         self.resizable(False, False)
         self.configure(bg=C["bg"])
         self.grab_set()
@@ -426,11 +426,11 @@ class SetupDialog(tk.Toplevel):
 
         existing = load_credentials()
         fields = [
-            ("Access Key ID",     "R2_ACCESS_KEY", False,
-             "Cloudflare R2 Access Key ID"),
-            ("Secret Access Key", "R2_SECRET_KEY", True,
-             "Cloudflare R2 Secret Access Key"),
-            ("Endpoint URL",      "R2_ENDPOINT",   False,
+            ("访问密钥 ID（Access Key ID）",     "R2_ACCESS_KEY", False,
+             "Cloudflare R2 访问密钥 ID（Access Key ID）"),
+            ("机密访问密钥（Secret Access Key）", "R2_SECRET_KEY", True,
+             "Cloudflare R2 机密访问密钥（Secret Access Key）"),
+            ("端点地址（Endpoint URL）",         "R2_ENDPOINT",   False,
              "https://<account_id>.r2.cloudflarestorage.com"),
         ]
         self._vars: dict[str, tk.StringVar] = {}
@@ -477,12 +477,12 @@ class SetupDialog(tk.Toplevel):
         sk = self._vars["R2_SECRET_KEY"].get().strip()
         ep = self._vars["R2_ENDPOINT"].get().strip()
         if not (ak and sk and ep):
-            messagebox.showwarning("Missing Fields",
-                                   "All three fields are required.", parent=self)
+            messagebox.showwarning("缺少信息",
+                                   "请填写全部三项连接信息。", parent=self)
             return
         if not ep.startswith("http"):
-            messagebox.showwarning("Invalid Endpoint",
-                                   "Endpoint must start with https://", parent=self)
+            messagebox.showwarning("端点地址无效",
+                                   "端点地址必须以 http:// 或 https:// 开头。", parent=self)
             return
         save_credentials(ak, sk, ep)
         self._on_save(ak, sk, ep)
@@ -494,7 +494,7 @@ class R2ManagerApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("R2 Manager")
+        self.title("R2 管理器")
         self.geometry("1100x680")
         self.minsize(800, 500)
         self.configure(bg=C["bg"])
@@ -510,7 +510,7 @@ class R2ManagerApp(tk.Tk):
         self._current_bucket   = tk.StringVar()
         self._current_prefix   = ""          # current "folder" path e.g. "imgs/"
         self._all_files:       list = []
-        self._status_text      = tk.StringVar(value="Not connected  –  please add credentials via Settings")
+        self._status_text      = tk.StringVar(value="未连接  –  请在“设置”中配置 R2 凭证")
         self._sort_reverse:    dict = {}
 
         # ── Build UI ─────────────────────────────────────────────────────────
@@ -577,21 +577,21 @@ class R2ManagerApp(tk.Tk):
         self.config(menu=mb)
 
         fm = tk.Menu(mb, tearoff=0, **mk)
-        fm.add_command(label="Upload File(s)…",   command=self._do_upload)
-        fm.add_command(label="Download Selected…", command=self._do_download)
+        fm.add_command(label="上传文件…",     command=self._do_upload)
+        fm.add_command(label="下载所选项…",   command=self._do_download)
         fm.add_separator()
-        fm.add_command(label="Exit",               command=self.quit)
-        mb.add_cascade(label="File", menu=fm)
+        fm.add_command(label="退出",           command=self.quit)
+        mb.add_cascade(label="文件", menu=fm)
 
         em = tk.Menu(mb, tearoff=0, **mk)
-        em.add_command(label="Delete Selected",  command=self._do_delete)
-        em.add_command(label="Refresh",          command=self._do_refresh)
-        em.add_command(label="Go Up",            command=self._go_up)
-        mb.add_cascade(label="Edit", menu=em)
+        em.add_command(label="删除所选项", command=self._do_delete)
+        em.add_command(label="刷新",       command=self._do_refresh)
+        em.add_command(label="返回上级",   command=self._go_up)
+        mb.add_cascade(label="操作", menu=em)
 
         sm = tk.Menu(mb, tearoff=0, **mk)
-        sm.add_command(label="API Credentials…", command=self._open_settings)
-        mb.add_cascade(label="Settings", menu=sm)
+        sm.add_command(label="R2 API 凭证…", command=self._open_settings)
+        mb.add_cascade(label="设置", menu=sm)
 
     # ── Header ────────────────────────────────────────────────────────────────
 
@@ -608,14 +608,14 @@ class R2ManagerApp(tk.Tk):
             bg=C["hdr_bg"], fg="#ffffff", font=("Segoe UI", 20),
         ).pack(side="left", padx=(0, 6))
         tk.Label(
-            logo_frm, text="R2 Manager",
+            logo_frm, text="R2 管理器",
             bg=C["hdr_bg"], fg="#ffffff", font=("Segoe UI", 14, "bold"),
         ).pack(side="left")
 
         right = tk.Frame(hdr, bg=C["hdr_bg"])
         right.pack(side="right", padx=18)
 
-        tk.Label(right, text="Bucket:", bg=C["hdr_bg"],
+        tk.Label(right, text="存储桶：", bg=C["hdr_bg"],
                  fg="#d0f0e0", font=FONT).pack(side="left", padx=(0, 6))
 
         # Combobox with rounded look via Frame border
@@ -775,10 +775,10 @@ class R2ManagerApp(tk.Tk):
             "relief": "flat",
         }
         self._ctx = tk.Menu(self, tearoff=0, **mk)
-        self._ctx.add_command(label="⬇  Download",      command=self._do_download)
-        self._ctx.add_command(label="🗑  Delete",        command=self._do_delete)
+        self._ctx.add_command(label="⬇  下载",          command=self._do_download)
+        self._ctx.add_command(label="🗑  删除",          command=self._do_delete)
         self._ctx.add_separator()
-        self._ctx.add_command(label="📋  Copy Full Key", command=self._copy_key)
+        self._ctx.add_command(label="📋  复制完整对象键", command=self._copy_key)
 
     # ── Status bar ────────────────────────────────────────────────────────────
 
@@ -829,7 +829,7 @@ class R2ManagerApp(tk.Tk):
     def _connect(self, ak: str, sk: str, ep: str):
         self._r2 = R2Manager(ak, sk, ep)
         host = ep.split("//", 1)[-1].split("/")[0]
-        self._set_status(f"✓ Connected  –  {host}")
+        self._set_status(f"✓ 已连接  –  {host}")
         # Restore last-used bucket if none already set in the UI
         if not self._current_bucket.get().strip():
             saved = load_last_bucket()
@@ -895,7 +895,7 @@ class R2ManagerApp(tk.Tk):
             tag = ("folder", "even" if row % 2 == 0 else "odd")
             self._file_list.insert(
                 "", "end",
-                values=(f"📁   {sub}/", "—", "Folder", "—"),
+                values=(f"📁   {sub}/", "—", "文件夹", "—"),
                 iid=f"__dir__{prefix}{sub}",
                 tags=tag,
             )
@@ -922,8 +922,8 @@ class R2ManagerApp(tk.Tk):
         bucket = self._current_bucket.get()
         total_size = _fmt_size(sum(f["size"] for f in self._all_files))
         self._set_status(
-            f"Bucket: {bucket}  |  {len(self._all_files)} objects  {total_size}  "
-            f"|  {total} items in  /{prefix}"
+            f"存储桶：{bucket}  |  共 {len(self._all_files)} 个对象，{total_size}  "
+            f"|  /{prefix} 中 {total} 项"
         )
         self._path_var.set("/" + prefix)
 
@@ -972,7 +972,7 @@ class R2ManagerApp(tk.Tk):
         if not key.startswith("__dir__"):
             self.clipboard_clear()
             self.clipboard_append(key)
-            self._set_status(f"Copied key: {key}")
+            self._set_status(f"已复制对象键：{key}")
 
     # ── Column sort ───────────────────────────────────────────────────────────
 
@@ -994,15 +994,15 @@ class R2ManagerApp(tk.Tk):
 
     def _need_connection(self) -> bool:
         if not self._r2:
-            messagebox.showwarning("Not Connected",
-                                   "Please configure R2 credentials via Settings.", parent=self)
+            messagebox.showwarning("未连接",
+                                   "请在“设置”中配置 R2 凭证。", parent=self)
             return False
         return True
 
     def _need_bucket(self) -> bool:
         if not self._current_bucket.get().strip():
-            messagebox.showwarning("No Bucket",
-                                   "Enter a bucket name in the header bar and press Enter.", parent=self)
+            messagebox.showwarning("未指定存储桶",
+                                   "请在顶部输入框中输入存储桶名称后按 Enter 键。", parent=self)
             return False
         return True
 
@@ -1029,7 +1029,7 @@ class R2ManagerApp(tk.Tk):
         if not self._need_connection() or not self._need_bucket():
             return
         bucket = self._current_bucket.get().strip()
-        self._set_status(f"Loading {bucket}…")
+        self._set_status(f"正在加载 {bucket}…")
         self._show_progress(True)
         self._progress_var.set(0)
 
@@ -1038,7 +1038,7 @@ class R2ManagerApp(tk.Tk):
                 files = self._r2.list_all_files(bucket)
                 self.after(0, lambda: self._on_refresh_done(files, bucket))
             except Exception as exc:
-                self.after(0, lambda e=exc: self._on_error("Refresh Error", e))
+                self.after(0, lambda e=exc: self._on_error("刷新失败", e))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1053,7 +1053,7 @@ class R2ManagerApp(tk.Tk):
         if not self._need_connection() or not self._need_bucket():
             return
         paths = filedialog.askopenfilenames(
-            parent=self, title="Select files to upload"
+            parent=self, title="选择要上传的文件"
         )
         if not paths:
             return
@@ -1067,7 +1067,7 @@ class R2ManagerApp(tk.Tk):
             for i, local_path in enumerate(paths, 1):
                 fname  = Path(local_path).name
                 r2_key = prefix + fname
-                self.after(0, lambda k=r2_key: self._set_status(f"Uploading {k}…"))
+                self.after(0, lambda k=r2_key: self._set_status(f"正在上传 {k}…"))
                 self.after(0, lambda v=i/total*100: self._progress_var.set(v))
                 try:
                     self._r2.upload_file(bucket, local_path, r2_key)
@@ -1075,9 +1075,9 @@ class R2ManagerApp(tk.Tk):
                 except Exception as exc:
                     fail += 1
                     self.after(0, lambda e=exc: messagebox.showerror(
-                        "Upload Error", str(e), parent=self))
+                        "上传失败", str(e), parent=self))
             self.after(0, lambda: self._set_status(
-                f"Upload complete – {ok} succeeded, {fail} failed"))
+                f"上传完成 – 成功 {ok} 个，失败 {fail} 个"))
             self.after(0, lambda: self._show_progress(False))
             self.after(0, self._do_refresh)
 
@@ -1088,10 +1088,10 @@ class R2ManagerApp(tk.Tk):
             return
         keys = self._selected_file_keys()
         if not keys:
-            messagebox.showinfo("No Selection",
-                                "Select one or more files to download.", parent=self)
+            messagebox.showinfo("未选择文件",
+                                "请选择一个或多个要下载的文件。", parent=self)
             return
-        dest_dir = filedialog.askdirectory(parent=self, title="Choose download folder")
+        dest_dir = filedialog.askdirectory(parent=self, title="选择下载文件夹")
         if not dest_dir:
             return
         bucket = self._current_bucket.get().strip()
@@ -1103,7 +1103,7 @@ class R2ManagerApp(tk.Tk):
             for i, key in enumerate(keys, 1):
                 fname = key.split("/")[-1]
                 dest  = str(Path(dest_dir) / fname)
-                self.after(0, lambda k=key: self._set_status(f"Downloading {k}…"))
+                self.after(0, lambda k=key: self._set_status(f"正在下载 {k}…"))
                 self.after(0, lambda v=i/total*100: self._progress_var.set(v))
                 try:
                     self._r2.download_file(bucket, key, dest)
@@ -1111,9 +1111,9 @@ class R2ManagerApp(tk.Tk):
                 except Exception as exc:
                     fail += 1
                     self.after(0, lambda e=exc: messagebox.showerror(
-                        "Download Error", str(e), parent=self))
+                        "下载失败", str(e), parent=self))
             self.after(0, lambda: self._set_status(
-                f"Download complete – {ok} succeeded, {fail} failed"))
+                f"下载完成 – 成功 {ok} 个，失败 {fail} 个"))
             self.after(0, lambda: self._show_progress(False))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -1192,8 +1192,8 @@ class R2ManagerApp(tk.Tk):
             return
         file_keys, folder_prefixes = self._selected_delete_targets()
         if not file_keys and not folder_prefixes:
-            messagebox.showinfo("No Selection",
-                                "Select one or more files or folders to delete.", parent=self)
+            messagebox.showinfo("未选择项目",
+                                "请选择一个或多个要删除的文件或文件夹。", parent=self)
             return
 
         # Expand each selected folder into the full set of object keys it
@@ -1213,18 +1213,18 @@ class R2ManagerApp(tk.Tk):
         names += [p.rstrip("/").split("/")[-1] + "/" for p in folder_prefixes]
         preview = "\n".join(names[:6])
         if len(names) > 6:
-            preview += f"\n… and {len(names) - 6} more"
+            preview += f"\n… 以及另外 {len(names) - 6} 项"
         folder_note = ""
         if folder_prefixes:
             folder_note = (
-                f"\n\nThis includes {len(folder_prefixes)} folder(s), "
-                f"totalling {len(keys)} object(s) to be removed."
+                f"\n\n其中包含 {len(folder_prefixes)} 个文件夹，"
+                f"共将删除 {len(keys)} 个对象。"
             )
 
         if not messagebox.askyesno(
-            "Confirm Delete",
-            f"Permanently delete {len(names)} item(s)?\n\n{preview}{folder_note}\n\n"
-            "This action cannot be undone.",
+            "确认删除",
+            f"确定要永久删除 {len(names)} 项吗？\n\n{preview}{folder_note}\n\n"
+            "此操作无法撤销。",
             parent=self,
         ):
             return
@@ -1235,7 +1235,7 @@ class R2ManagerApp(tk.Tk):
         def _run():
             ok = fail = 0
             for i, key in enumerate(keys, 1):
-                self.after(0, lambda k=key: self._set_status(f"Deleting {k}…"))
+                self.after(0, lambda k=key: self._set_status(f"正在删除 {k}…"))
                 self.after(0, lambda v=i/total*100: self._progress_var.set(v))
                 try:
                     self._r2.delete_file(bucket, key)
@@ -1246,9 +1246,9 @@ class R2ManagerApp(tk.Tk):
                 except Exception as exc:
                     fail += 1
                     self.after(0, lambda e=exc: messagebox.showerror(
-                        "Delete Error", str(e), parent=self))
+                        "删除失败", str(e), parent=self))
             self.after(0, lambda: self._set_status(
-                f"Deleted {ok} object(s), {fail} failed"))
+                f"已删除 {ok} 个对象，失败 {fail} 个"))
             self.after(0, lambda: self._show_progress(False))
             self.after(0, self._do_refresh)
 
@@ -1256,7 +1256,7 @@ class R2ManagerApp(tk.Tk):
 
     def _on_error(self, title: str, exc: Exception):
         self._show_progress(False)
-        self._set_status(f"Error: {exc}")
+        self._set_status(f"错误：{exc}")
         messagebox.showerror(title, str(exc), parent=self)
 
 
