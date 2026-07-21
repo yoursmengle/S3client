@@ -112,7 +112,16 @@ def has_credentials() -> bool:
     return all(c[k] for k in ("R2_ACCESS_KEY", "R2_SECRET_KEY", "R2_ENDPOINT"))
 
 
-_BUCKET_FILE = Path(__file__).parent / ".r2_bucket"
+# When frozen by PyInstaller (--onefile), __file__ resolves to a throwaway
+# temp extraction directory (sys._MEIPASS) that is wiped after each run, so
+# any file written there is lost. Use the directory of the running exe
+# instead in that case, and the script's directory otherwise.
+if getattr(sys, "frozen", False):
+    _APP_DIR = Path(sys.executable).parent
+else:
+    _APP_DIR = Path(__file__).parent
+
+_BUCKET_FILE = _APP_DIR / ".r2_bucket"
 
 
 def save_last_bucket(bucket: str) -> None:

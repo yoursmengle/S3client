@@ -1,1 +1,4 @@
 .r2_bucket
+build/
+dist/
+*.spec
