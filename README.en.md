@@ -1,23 +1,25 @@
-# R2 Manager
+# S3 Client
 
 [中文](README.md) | [English](README.en.md)
 
-A graphical Cloudflare R2 object manager for Windows. Browse the objects in a bucket, upload and download files, create virtual folders, and delete objects or entire prefixes — all without memorizing S3 commands.
+A graphical Cloudflare R2 object manager for Windows. Browse the objects in a bucket, upload and download files, create virtual folders, and delete objects or entire prefixes — all without memorizing S3 commands. The UI is bilingual (Chinese/English): it auto-selects based on your OS language at launch, and can be switched manually at any time.
 
 > This project talks to Cloudflare R2 through its S3-compatible API; it is not an official Cloudflare client. Make sure you're authorized to access the target bucket before using it.
 
-![R2 Manager screenshot](assets/screenshot.png)
+![S3 Client screenshot](assets/screenshot_en.png)
 
 ## Features
 
 - Browse objects in a bucket, with a "folder" hierarchy view
-- Upload multiple files into the current directory
+- Upload multiple files, or an entire folder (subdirectory structure preserved), into the current directory
 - Download one or more selected objects
 - Create virtual folders (a zero-byte object whose key ends with `/`)
 - Delete files; deleting a folder recursively removes every object under that prefix
 - Shows file size, type, and modified time; supports sorting, copying the full object key, and right-click actions
 - Supports non-ASCII file names (e.g. Chinese)
 - Remembers the last successfully accessed bucket name
+- Bilingual UI: auto-selected from the OS language at launch, toggle any time from the button in the bottom-right corner; your choice is remembered
+- Network requests automatically retry on transient errors (timeouts, dropped connections, 5xx responses)
 
 ## Requirements
 
@@ -48,7 +50,7 @@ Set-Location r2client
 1. Checks for `uv`; installs it via `python -m pip` if missing.
 2. Creates a `.venv` virtual environment in the project directory (first run only).
 3. Installs dependencies from `requirements.txt`.
-4. Launches `r2_manager.py`.
+4. Launches `s3_client.py`.
 
 If PowerShell blocks script execution, bypass the execution policy for just this run:
 
@@ -65,7 +67,7 @@ You can also set up the environment and run the app by hand:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe .\r2_manager.py
+.\.venv\Scripts\python.exe .\s3_client.py
 ```
 
 ## Setting up Cloudflare R2
@@ -114,7 +116,7 @@ https://<ACCOUNT_ID>.r2.cloudflarestorage.com
 
 Replace `<ACCOUNT_ID>` with your Cloudflare account ID; don't put the bucket name in the endpoint. Buckets created under the EU or FedRAMP jurisdiction must use their jurisdiction-specific endpoint. See [Cloudflare's S3 API docs](https://developers.cloudflare.com/r2/api/s3/api/) for the exact format.
 
-### 5. Connect in R2 Manager
+### 5. Connect in S3 Client
 
 A credential setup window appears on first launch. Fill it in as follows:
 
@@ -173,7 +175,7 @@ The app talks to the R2 S3 API using AWS Signature Version 4, and saves the cred
 | `R2_SECRET_KEY` | R2 Secret Access Key |
 | `R2_ENDPOINT` | R2 S3 API endpoint |
 
-On Windows, these values are written to the current user's environment-variable registry key (`HKCU\Environment`) and read back automatically on subsequent launches. They are never written to the project's config files or committed to Git, but they are **not encrypted at rest**. Don't expose the Secret Access Key on a shared Windows account, in screen recordings, screenshots, or logs.
+On Windows, these values are written to the current user's environment-variable registry key (`HKCU\Environment`) and read back automatically on subsequent launches. They are never written to the project's config files or committed to Git. The Access Key ID and Secret Access Key are encrypted with Windows DPAPI (`CryptProtectData`) before being written to the registry, scoped to the current Windows user account — only that account can decrypt them; the Endpoint URL isn't sensitive and stays in plain text for easy troubleshooting. Don't expose the Secret Access Key on a shared Windows account, in screen recordings, screenshots, or logs.
 
 The most recently used bucket name is saved in a `.r2_bucket` file in the app directory; that file contains no secrets and is already ignored by Git.
 
@@ -201,7 +203,7 @@ The project ships a PyInstaller build script:
 It prepares the build dependencies and produces a single-file, console-free app:
 
 ```text
-dist\R2Manager.exe
+dist\S3Client.exe
 ```
 
 The `build/` and `dist/` output directories are rebuilt during the build; both are already ignored by Git. Verify the resulting `.exe` on a clean Windows test machine before shipping it.
@@ -210,7 +212,7 @@ The `build/` and `dist/` output directories are rebuilt during the build; both a
 
 ```text
 .
-├── r2_manager.py   # Tkinter UI, R2 requests, and AWS SigV4 signing
+├── s3_client.py    # Tkinter UI, R2 requests, AWS SigV4 signing, and bilingual strings
 ├── start.ps1       # Prepares the environment and launches the app
 ├── build.ps1       # Packages a Windows .exe with PyInstaller
 ├── requirements.txt # Python runtime dependencies
@@ -224,7 +226,7 @@ The `build/` and `dist/` output directories are rebuilt during the build; both a
 
 ## Known limitations
 
-- Officially supports Windows only; credential persistence relies on the Windows registry.
+- Officially supports Windows only; credential persistence (and its DPAPI encryption) relies on Windows-only mechanisms.
 - Uploads read the entire file into memory before sending it to R2; not suited to very large files or scenarios needing chunked/resumable uploads.
 - The tool doesn't manage bucket creation, listing all buckets, public domains, CORS, lifecycle rules, or access policies — do those in the Cloudflare Dashboard.
 - The project currently has no automated tests or CI. Manually verify connecting, uploading, downloading, and deleting before releasing changes.

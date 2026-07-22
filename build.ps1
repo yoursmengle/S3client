@@ -1,5 +1,5 @@
-# R2 Manager – Build Script
-# Compiles r2_manager.py into a single standalone Windows .exe using PyInstaller.
+# S3 Client – Build Script
+# Compiles s3_client.py into a single standalone Windows .exe using PyInstaller.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -46,14 +46,14 @@ $env:UV_HTTP_TIMEOUT = "120"
 if ($LASTEXITCODE -ne 0) { Write-Error "安装依赖失败。"; exit 1 }
 
 # ── 4. Build the standalone executable ────────────────────────────────────────
-Write-Host "[构建] 正在使用 PyInstaller 构建 R2Manager.exe…" -ForegroundColor Cyan
+Write-Host "[构建] 正在使用 PyInstaller 构建 S3Client.exe…" -ForegroundColor Cyan
 & $VenvPython -m PyInstaller `
-    --name "R2Manager" `
+    --name "S3Client" `
     --onefile `
     --windowed `
     --noconfirm `
     --clean `
-    r2_manager.py
+    s3_client.py
 if ($LASTEXITCODE -ne 0) { Write-Error "PyInstaller 构建失败。"; exit 1 }
 
-Write-Host "[构建] 完成。可执行文件已生成：dist\R2Manager.exe" -ForegroundColor Green
+Write-Host "[构建] 完成。可执行文件已生成：dist\S3Client.exe" -ForegroundColor Green

@@ -1,4 +1,4 @@
-# R2 Manager – Startup Script (uv)
+# S3 Client – Startup Script (uv)
 # Automatically creates a virtual environment, installs dependencies, and launches the app.
 
 Set-StrictMode -Version Latest
@@ -44,5 +44,5 @@ Write-Host "[启动] 正在安装依赖…" -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { Write-Error "安装依赖失败。"; exit 1 }
 
 # ── 4. Launch the application ─────────────────────────────────────────────────
-Write-Host "[启动] 正在启动 R2 管理器…" -ForegroundColor Green
-& "$VenvDir\Scripts\python.exe" r2_manager.py
+Write-Host "[启动] 正在启动 S3 客户端…" -ForegroundColor Green
+& "$VenvDir\Scripts\python.exe" s3_client.py

@@ -1,23 +1,25 @@
-# R2 Manager
+# S3 Client
 
 [中文](README.md) | [English](README.en.md)
 
-一个面向 Windows 的 Cloudflare R2 图形化对象管理工具。无需记忆 S3 命令，即可在桌面端浏览 Bucket 中的对象、上传和下载文件、创建虚拟文件夹，以及删除对象或整个前缀目录。
+一个面向 Windows 的 Cloudflare R2 图形化对象管理工具。无需记忆 S3 命令，即可在桌面端浏览 Bucket 中的对象、上传和下载文件、创建虚拟文件夹，以及删除对象或整个前缀目录。界面支持中英双语，启动时按操作系统语言自动选择，也可随时手动切换。
 
 > 本项目通过 Cloudflare R2 的 S3 兼容 API 访问存储；它不是 Cloudflare 官方客户端。请在使用前确认自己拥有目标 Bucket 的授权。
 
-![R2 Manager 界面截图](assets/screenshot.png)
+![S3 Client 界面截图](assets/screenshot.png)
 
 ## 功能
 
 - 浏览 Bucket 中的对象，并按“文件夹”层级查看
-- 上传多个文件到当前目录
+- 上传多个文件，或整个文件夹（保留子目录结构）到当前目录
 - 下载一个或多个选中的对象
 - 新建虚拟文件夹（创建以 `/` 结尾的零字节对象）
 - 删除文件；删除文件夹时递归删除该前缀下的所有对象
 - 显示文件大小、类型和修改时间，支持排序、复制完整对象 Key 和右键操作
 - 支持中文等非 ASCII 文件名
 - 保存最近成功访问的 Bucket 名称
+- 中英双语界面：启动时按操作系统语言自动选择，右下角按钮可随时切换，选择会被记住
+- 网络请求在瞬时错误（超时、连接中断、5xx）时自动重试
 
 ## 系统要求
 
@@ -48,7 +50,7 @@ Set-Location r2client
 1. 检查 `uv`；如果未安装，会通过 `python -m pip` 安装。
 2. 在项目目录创建 `.venv` 虚拟环境（首次运行）。
 3. 按 `requirements.txt` 安装依赖。
-4. 启动 `r2_manager.py`。
+4. 启动 `s3_client.py`。
 
 如果 PowerShell 阻止脚本执行，请只为本次启动绕过执行策略：
 
@@ -65,7 +67,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\start.ps1
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe .\r2_manager.py
+.\.venv\Scripts\python.exe .\s3_client.py
 ```
 
 ## 申请并配置 Cloudflare R2
@@ -114,7 +116,7 @@ https://<ACCOUNT_ID>.r2.cloudflarestorage.com
 
 将 `<ACCOUNT_ID>` 替换为 Cloudflare Account ID；不要把 Bucket 名称写入 Endpoint。使用 EU 或 FedRAMP jurisdiction 创建的 Bucket 必须使用其对应的 jurisdiction 专用 Endpoint。具体格式见 [Cloudflare S3 API 文档](https://developers.cloudflare.com/r2/api/s3/api/)。
 
-### 5. 在 R2 Manager 中连接
+### 5. 在 S3 Client 中连接
 
 首次启动时会出现凭证设置窗口。按下表填入：
 
@@ -173,7 +175,7 @@ R2 是对象存储，不存在真正的目录。本应用把对象 Key 中以 `/
 | `R2_SECRET_KEY` | R2 Secret Access Key |
 | `R2_ENDPOINT` | R2 S3 API Endpoint |
 
-在 Windows 上，这些值会写入当前用户的环境变量注册表项（`HKCU\Environment`），并在后续启动时自动读取。它们不会写入项目的普通配置文件或提交到 Git，但也**不是加密存储**。请不要在共享 Windows 账户、录屏、截图或日志中泄露 Secret Access Key。
+在 Windows 上，这些值会写入当前用户的环境变量注册表项（`HKCU\Environment`），并在后续启动时自动读取。它们不会写入项目的普通配置文件或提交到 Git。Access Key ID 和 Secret Access Key 在写入注册表前会用 Windows DPAPI（`CryptProtectData`）加密，加密绑定当前 Windows 用户账户，仅同一账户可解密；Endpoint URL 不敏感，仍以明文保存以便排查问题。请不要在共享 Windows 账户、录屏、截图或日志中泄露 Secret Access Key。
 
 最近使用的 Bucket 名称会保存在应用目录的 `.r2_bucket` 文件中；该文件不包含密钥，且已被 Git 忽略。
 
@@ -201,7 +203,7 @@ R2 是对象存储，不存在真正的目录。本应用把对象 Key 中以 `/
 脚本会准备构建依赖并生成单文件、无控制台窗口的应用：
 
 ```text
-dist\R2Manager.exe
+dist\S3Client.exe
 ```
 
 构建过程中会重建 `build/` 和 `dist/` 产物目录；这些文件均已被 Git 忽略。请在干净的 Windows 测试环境中验证生成的 `.exe` 后再发布。
@@ -210,7 +212,7 @@ dist\R2Manager.exe
 
 ```text
 .
-├── r2_manager.py   # Tkinter 界面、R2 请求与 AWS SigV4 签名
+├── s3_client.py    # Tkinter 界面、R2 请求、AWS SigV4 签名与中英双语文案
 ├── start.ps1       # 自动准备环境并启动应用
 ├── build.ps1       # 使用 PyInstaller 打包 Windows .exe
 ├── requirements.txt # Python 运行依赖
@@ -224,7 +226,7 @@ dist\R2Manager.exe
 
 ## 已知限制
 
-- 当前正式支持 Windows；凭证持久化依赖 Windows 注册表。
+- 当前正式支持 Windows；凭证持久化依赖 Windows 注册表（DPAPI 加密同样是 Windows 专属机制）。
 - 上传实现会先将整个文件读入内存，再发送到 R2；不适合超大文件或需要分块/断点续传的场景。
 - 该工具不提供 Bucket 创建、列出所有 Bucket、公开域名、CORS、生命周期规则或访问策略管理；请在 Cloudflare Dashboard 中完成这些管理操作。
 - 项目目前没有自动化测试或 CI。发布前建议至少手动验证连接、上传、下载和删除流程。
