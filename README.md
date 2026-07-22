@@ -1,8 +1,12 @@
 # R2 Manager
 
+[中文](README.md) | [English](README.en.md)
+
 一个面向 Windows 的 Cloudflare R2 图形化对象管理工具。无需记忆 S3 命令，即可在桌面端浏览 Bucket 中的对象、上传和下载文件、创建虚拟文件夹，以及删除对象或整个前缀目录。
 
 > 本项目通过 Cloudflare R2 的 S3 兼容 API 访问存储；它不是 Cloudflare 官方客户端。请在使用前确认自己拥有目标 Bucket 的授权。
+
+![R2 Manager 界面截图](assets/screenshot.png)
 
 ## 功能
 
