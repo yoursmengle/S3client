@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-S3 Client – A bilingual (中文/English) GUI client for Cloudflare R2 object storage.
-Based on the r2client library: https://github.com/fayharinn/R2-Client
+S3 Client – A bilingual (中文/English) GUI client for S3-compatible object
+storage: Cloudflare R2 and generic S3-compatible services (AWS S3, Backblaze
+B2, MinIO, etc). Based on the r2client library: https://github.com/fayharinn/R2-Client
+
+Multiple bucket credentials, across multiple platforms, can be configured on
+the credentials page; each is auto-probed for validity and its accessible
+buckets right after being added. Outside that page, every bucket from every
+valid credential is fused into a single file view, and uploads are routed to
+whichever bucket currently holds the least data.
 
 Credentials are stored ONLY as Windows user environment variables (registry),
 never written to disk files. The Access Key ID and Secret Access Key are
@@ -15,6 +22,8 @@ remembered for future launches.
 
 import os
 import sys
+import json
+import uuid
 import hmac
 import time
 import base64
@@ -154,23 +163,9 @@ def _dpapi_unprotect(value: str) -> str:
     return text
 
 
-def save_credentials(access_key: str, secret_key: str, endpoint: str) -> None:
-    """Persist R2 credentials as user environment variables (no disk files).
-
-    Access Key ID and Secret Access Key are DPAPI-encrypted before being
-    written to the registry; the endpoint URL is not sensitive and is kept
-    in plain text so it's easy to inspect/troubleshoot.
-    """
-    _reg_write("R2_ACCESS_KEY", _dpapi_protect(access_key))
-    _reg_write("R2_SECRET_KEY", _dpapi_protect(secret_key))
-    _reg_write("R2_ENDPOINT",   endpoint)
-    os.environ["R2_ACCESS_KEY"] = access_key
-    os.environ["R2_SECRET_KEY"] = secret_key
-    os.environ["R2_ENDPOINT"]   = endpoint
-
-
 def load_credentials() -> dict:
-    """Load credentials from the current process env or the registry."""
+    """Load the legacy single-credential values (pre-multi-bucket) from the
+    current process env or the registry. Used only to migrate old setups."""
     result = {}
     for name in ("R2_ACCESS_KEY", "R2_SECRET_KEY", "R2_ENDPOINT"):
         val = os.environ.get(name)
@@ -181,11 +176,6 @@ def load_credentials() -> dict:
         if val:
             os.environ[name] = val
     return result
-
-
-def has_credentials() -> bool:
-    c = load_credentials()
-    return all(c[k] for k in ("R2_ACCESS_KEY", "R2_SECRET_KEY", "R2_ENDPOINT"))
 
 
 # ─── UI language: OS auto-detect + persisted manual override ─────────────────
@@ -222,32 +212,59 @@ def set_ui_language_override(lang: str) -> None:
     os.environ[_LANG_REG_NAME] = lang
 
 
-# When frozen by PyInstaller (--onefile), __file__ resolves to a throwaway
-# temp extraction directory (sys._MEIPASS) that is wiped after each run, so
-# any file written there is lost. Use the directory of the running exe
-# instead in that case, and the script's directory otherwise.
-if getattr(sys, "frozen", False):
-    _APP_DIR = Path(sys.executable).parent
-else:
-    _APP_DIR = Path(__file__).parent
+# ─── Multi-credential persistence ─────────────────────────────────────────────
 
-_BUCKET_FILE = _APP_DIR / ".r2_bucket"
+_CRED_LIST_ENV = "S3CLIENT_CREDENTIALS_JSON"
 
 
-def save_last_bucket(bucket: str) -> None:
-    """Persist the last-used bucket name to a local file."""
-    try:
-        _BUCKET_FILE.write_text(bucket.strip(), encoding="utf-8")
-    except Exception:
-        pass
+def save_credentials_list(entries: list) -> None:
+    """Persist the full credential list (DPAPI-encrypting each secret) as a
+    single JSON-encoded user environment variable."""
+    serializable = [{
+        "id":         e["id"],
+        "platform":   e["platform"],
+        "access_key": _dpapi_protect(e["access_key"]),
+        "secret_key": _dpapi_protect(e["secret_key"]),
+        "endpoint":   e["endpoint"],
+        "region":     e.get("region", "auto"),
+    } for e in entries]
+    data = json.dumps(serializable, ensure_ascii=False)
+    _reg_write(_CRED_LIST_ENV, data)
+    os.environ[_CRED_LIST_ENV] = data
 
 
-def load_last_bucket() -> str:
-    """Return the last-used bucket name, or empty string if none saved."""
-    try:
-        return _BUCKET_FILE.read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
+def load_credentials_list() -> list:
+    """Load the credential list, decrypting secrets. Falls back to migrating
+    a legacy single-credential (pre-multi-bucket) setup if no list exists."""
+    raw = os.environ.get(_CRED_LIST_ENV) or _reg_read(_CRED_LIST_ENV)
+    if raw:
+        try:
+            stored = json.loads(raw)
+        except Exception:
+            stored = []
+        entries = [{
+            "id":         e.get("id") or str(uuid.uuid4()),
+            "platform":   e.get("platform", "r2"),
+            "access_key": _dpapi_unprotect(e.get("access_key", "")),
+            "secret_key": _dpapi_unprotect(e.get("secret_key", "")),
+            "endpoint":   e.get("endpoint", ""),
+            "region":     e.get("region", "auto"),
+        } for e in stored]
+        if entries:
+            return entries
+
+    legacy = load_credentials()
+    if all(legacy.get(k) for k in ("R2_ACCESS_KEY", "R2_SECRET_KEY", "R2_ENDPOINT")):
+        entry = {
+            "id": str(uuid.uuid4()), "platform": "r2",
+            "access_key": legacy["R2_ACCESS_KEY"],
+            "secret_key": legacy["R2_SECRET_KEY"],
+            "endpoint":   legacy["R2_ENDPOINT"],
+            "region":     "auto",
+        }
+        save_credentials_list([entry])
+        return [entry]
+    return []
 
 
 # ─── Translation table ────────────────────────────────────────────────────────
@@ -256,21 +273,45 @@ STRINGS = {
     "zh": {
         "app_name": "S3 客户端",
 
-        "setup_title":    "{app} – 连接 Cloudflare R2",
-        "setup_topbar":   "☁  连接 Cloudflare R2",
-        "setup_subtitle": "凭证以用户环境变量形式保存，不会写入任何磁盘文件。",
         "field_access_key_label": "访问密钥 ID（Access Key ID）",
         "field_secret_key_label": "机密访问密钥（Secret Access Key）",
         "field_endpoint_label":   "端点地址（Endpoint URL）",
-        "btn_connect": "  ✔  连接  ",
+        "field_platform_label":   "平台",
+        "field_region_label":     "区域（Region）",
+        "platform_r2_label":      "Cloudflare R2",
+        "platform_s3_label":      "通用 S3 兼容（AWS S3 / Backblaze B2 / MinIO 等）",
         "btn_cancel":  "  取消  ",
+        "btn_confirm": "  确定  ",
+        "btn_add_confirm": "  添加  ",
+        "btn_done":    "  完成  ",
         "warn_missing_info_title": "缺少信息",
-        "warn_missing_info_body":  "请填写全部三项连接信息。",
+        "warn_missing_info_body":  "请填写全部必填项。",
         "warn_bad_endpoint_title": "端点地址无效",
         "warn_bad_endpoint_body":  "端点地址必须以 http:// 或 https:// 开头。",
 
-        "status_not_connected": "未连接  –  请在“设置”中配置 R2 凭证",
-        "connected_status":     "✓ 已连接  –  {host}",
+        "cred_dialog_title":    "S3 存储桶凭证管理",
+        "cred_dialog_subtitle": "凭证以用户环境变量形式保存（密钥经 DPAPI 加密），不会写入任何磁盘文件。添加后将自动探测有效性与可访问的存储桶。",
+        "cred_configured_label": "已配置的凭证",
+        "cred_col_platform":    "平台",
+        "cred_col_access_key":  "访问密钥 ID",
+        "cred_col_secret_key":  "机密访问密钥",
+        "cred_col_endpoint":    "端点地址",
+        "cred_col_status":      "凭证状态",
+        "ctx_recheck":          "🔄  重新验证",
+        "ctx_delete_cred":      "🗑  删除",
+        "confirm_delete_cred_title": "确认删除",
+        "confirm_delete_cred_body":  "确定要删除这条凭证吗？\n\n{endpoint}",
+        "add_cred_dialog_title": "添加存储桶凭证",
+
+        "status_checking":         "验证中…",
+        "cred_status_valid":       "✓ 有效 · {n} 个存储桶",
+        "cred_status_valid_empty": "✓ 有效 · 未发现存储桶",
+        "cred_status_invalid":     "✗ 无效：{err}",
+
+        "conn_summary":      "🪣 {n_buckets} 个存储桶 · {n_valid}/{n_total} 凭证有效",
+        "conn_summary_none": "未连接",
+
+        "status_not_connected": "未连接  –  请在设置中添加存储桶凭证",
 
         "menu_file":              "文件",
         "menu_upload_files":      "上传文件…",
@@ -282,9 +323,7 @@ STRINGS = {
         "menu_refresh":           "刷新",
         "menu_go_up":             "返回上级",
         "menu_settings":          "设置",
-        "menu_credentials":       "R2 API 凭证…",
-
-        "header_bucket_label": "存储桶：",
+        "menu_credentials":       "S3 存储桶凭证…",
 
         "tb_upload":        "⬆  上传",
         "tb_upload_folder": "⬆📁  上传文件夹",
@@ -307,22 +346,22 @@ STRINGS = {
         "ctx_delete":   "🗑  删除",
         "ctx_copy_key": "📋  复制完整对象键",
 
-        "warn_not_connected_title": "未连接",
-        "warn_not_connected_body":  "请在“设置”中配置 R2 凭证。",
-        "warn_no_bucket_title":     "未指定存储桶",
-        "warn_no_bucket_body":      "请在顶部输入框中输入存储桶名称后按 Enter 键。",
+        "warn_no_target_title": "未连接存储桶",
+        "warn_no_target_body":  "请在设置中添加至少一个有效的存储桶凭证。",
 
-        "status_loading": "正在加载 {bucket}…",
+        "status_probing":  "正在验证 {n} 个凭证…",
+        "status_loading_n": "正在加载 {n} 个存储桶…",
+        "status_partial_errors": "部分存储桶加载失败：{errors}",
 
         "dlg_choose_upload_files": "选择要上传的文件",
         "status_uploading":       "正在上传 {key}…",
         "err_upload_title":       "上传失败",
-        "status_upload_done":     "上传完成 – 成功 {ok} 个，失败 {fail} 个",
+        "status_upload_done_target": "上传完成 – 成功 {ok} 个，失败 {fail} 个（目标存储桶：{bucket}）",
 
         "dlg_choose_upload_folder":  "选择要上传的文件夹",
         "warn_empty_folder_title":  "空文件夹",
         "warn_empty_folder_body":   "所选文件夹中没有可上传的文件。",
-        "status_upload_folder_done": "文件夹上传完成 – 成功 {ok} 个，失败 {fail} 个",
+        "status_upload_folder_done_target": "文件夹上传完成 – 成功 {ok} 个，失败 {fail} 个（目标存储桶：{bucket}）",
 
         "info_no_files_title":     "未选择文件",
         "info_no_files_body":      "请选择一个或多个要下载的文件。",
@@ -338,10 +377,9 @@ STRINGS = {
         "warn_need_folder_name": "请输入文件夹名称。",
         "warn_bad_chars_title": "非法字符",
         "warn_bad_chars_body":  "文件夹名称包含非法字符。",
-        "status_mkdir_creating": "创建文件夹 {key}…",
+        "status_mkdir_creating_target": "创建文件夹 {key} → {bucket}…",
         "status_mkdir_done":     "文件夹 '{name}' 创建成功",
         "err_mkdir_title":       "创建失败",
-        "btn_confirm":           "  确定  ",
 
         "info_no_items_title": "未选择项目",
         "info_no_items_body":  "请选择一个或多个要删除的文件或文件夹。",
@@ -354,7 +392,7 @@ STRINGS = {
         "status_delete_done":  "已删除 {ok} 个对象，失败 {fail} 个",
 
         "status_error":          "错误：{err}",
-        "status_bucket_summary": "存储桶：{bucket}  |  共 {count} 个对象，{size}  |  /{prefix} 中 {n} 项",
+        "status_bucket_summary": "已融合 {n_buckets} 个存储桶  |  共 {count} 个对象，{size}  |  /{prefix} 中 {n} 项",
         "status_copied_key":     "已复制对象键：{key}",
 
         "action_list":     "列出对象",
@@ -376,21 +414,45 @@ STRINGS = {
     "en": {
         "app_name": "S3 Client",
 
-        "setup_title":    "{app} – Connect to Cloudflare R2",
-        "setup_topbar":   "☁  Connect to Cloudflare R2",
-        "setup_subtitle": "Credentials are stored as user environment variables and are never written to disk files.",
         "field_access_key_label": "Access Key ID",
         "field_secret_key_label": "Secret Access Key",
         "field_endpoint_label":   "Endpoint URL",
-        "btn_connect": "  ✔  Connect  ",
+        "field_platform_label":   "Platform",
+        "field_region_label":     "Region",
+        "platform_r2_label":      "Cloudflare R2",
+        "platform_s3_label":      "Generic S3-Compatible (AWS S3 / Backblaze B2 / MinIO, etc.)",
         "btn_cancel":  "  Cancel  ",
+        "btn_confirm": "  OK  ",
+        "btn_add_confirm": "  Add  ",
+        "btn_done":    "  Done  ",
         "warn_missing_info_title": "Missing information",
-        "warn_missing_info_body":  "Please fill in all three connection fields.",
+        "warn_missing_info_body":  "Please fill in all required fields.",
         "warn_bad_endpoint_title": "Invalid endpoint",
         "warn_bad_endpoint_body":  "The endpoint URL must start with http:// or https://.",
 
-        "status_not_connected": "Not connected  –  configure R2 credentials in Settings",
-        "connected_status":     "✓ Connected  –  {host}",
+        "cred_dialog_title":    "S3 Bucket Credentials",
+        "cred_dialog_subtitle": "Credentials are stored as user environment variables (keys DPAPI-encrypted) and never written to disk files. Each one is auto-probed for validity and accessible buckets after being added.",
+        "cred_configured_label": "Configured credentials",
+        "cred_col_platform":    "Platform",
+        "cred_col_access_key":  "Access Key ID",
+        "cred_col_secret_key":  "Secret Access Key",
+        "cred_col_endpoint":    "Endpoint",
+        "cred_col_status":      "Status",
+        "ctx_recheck":          "🔄  Re-verify",
+        "ctx_delete_cred":      "🗑  Delete",
+        "confirm_delete_cred_title": "Confirm Delete",
+        "confirm_delete_cred_body":  "Delete this credential?\n\n{endpoint}",
+        "add_cred_dialog_title": "Add Bucket Credential",
+
+        "status_checking":         "Verifying…",
+        "cred_status_valid":       "✓ Valid · {n} bucket(s)",
+        "cred_status_valid_empty": "✓ Valid · no buckets found",
+        "cred_status_invalid":     "✗ Invalid: {err}",
+
+        "conn_summary":      "🪣 {n_buckets} buckets · {n_valid}/{n_total} credentials valid",
+        "conn_summary_none": "Not connected",
+
+        "status_not_connected": "Not connected  –  add bucket credentials in Settings",
 
         "menu_file":              "File",
         "menu_upload_files":      "Upload File(s)…",
@@ -402,9 +464,7 @@ STRINGS = {
         "menu_refresh":           "Refresh",
         "menu_go_up":             "Go Up",
         "menu_settings":          "Settings",
-        "menu_credentials":       "R2 API Credentials…",
-
-        "header_bucket_label": "Bucket:",
+        "menu_credentials":       "S3 Bucket Credentials…",
 
         "tb_upload":        "⬆  Upload",
         "tb_upload_folder": "⬆📁  Upload Folder",
@@ -427,22 +487,22 @@ STRINGS = {
         "ctx_delete":   "🗑  Delete",
         "ctx_copy_key": "📋  Copy Full Object Key",
 
-        "warn_not_connected_title": "Not connected",
-        "warn_not_connected_body":  "Please configure R2 credentials in Settings.",
-        "warn_no_bucket_title":     "No bucket specified",
-        "warn_no_bucket_body":      "Enter a bucket name in the top box and press Enter.",
+        "warn_no_target_title": "No bucket connected",
+        "warn_no_target_body":  "Add at least one valid bucket credential in Settings.",
 
-        "status_loading": "Loading {bucket}…",
+        "status_probing":  "Verifying {n} credential(s)…",
+        "status_loading_n": "Loading {n} bucket(s)…",
+        "status_partial_errors": "Some buckets failed to load: {errors}",
 
         "dlg_choose_upload_files": "Select files to upload",
         "status_uploading":       "Uploading {key}…",
         "err_upload_title":       "Upload failed",
-        "status_upload_done":     "Upload complete – {ok} succeeded, {fail} failed",
+        "status_upload_done_target": "Upload complete – {ok} succeeded, {fail} failed (target bucket: {bucket})",
 
         "dlg_choose_upload_folder":  "Select a folder to upload",
         "warn_empty_folder_title":  "Empty folder",
         "warn_empty_folder_body":   "The selected folder has no files to upload.",
-        "status_upload_folder_done": "Folder upload complete – {ok} succeeded, {fail} failed",
+        "status_upload_folder_done_target": "Folder upload complete – {ok} succeeded, {fail} failed (target bucket: {bucket})",
 
         "info_no_files_title":     "No files selected",
         "info_no_files_body":      "Select one or more files to download.",
@@ -458,10 +518,9 @@ STRINGS = {
         "warn_need_folder_name": "Please enter a folder name.",
         "warn_bad_chars_title": "Invalid characters",
         "warn_bad_chars_body":  "The folder name contains invalid characters.",
-        "status_mkdir_creating": "Creating folder {key}…",
+        "status_mkdir_creating_target": "Creating folder {key} → {bucket}…",
         "status_mkdir_done":     "Folder '{name}' created successfully",
         "err_mkdir_title":       "Creation failed",
-        "btn_confirm":           "  OK  ",
 
         "info_no_items_title": "No items selected",
         "info_no_items_body":  "Select one or more files or folders to delete.",
@@ -474,7 +533,7 @@ STRINGS = {
         "status_delete_done":  "Deleted {ok} object(s), {fail} failed",
 
         "status_error":          "Error: {err}",
-        "status_bucket_summary": "Bucket: {bucket}  |  {count} objects total, {size}  |  {n} items in /{prefix}",
+        "status_bucket_summary": "Fused {n_buckets} bucket(s)  |  {count} objects total, {size}  |  {n} items in /{prefix}",
         "status_copied_key":     "Copied object key: {key}",
 
         "action_list":     "List objects",
@@ -531,17 +590,21 @@ FONT_L = ("Segoe UI", 13, "bold")
 FONT_S = ("Segoe UI", 8)
 
 
-# ─── R2 Backend ───────────────────────────────────────────────────────────────
-class R2Manager:
+# ─── S3-compatible backend ─────────────────────────────────────────────────────
+class S3Backend:
     """
-    Wraps r2client and adds a delete_file() method using AWS SigV4 signing
-    (the same mechanism used internally by r2client).
+    Talks to any S3-compatible storage service (Cloudflare R2, AWS S3,
+    Backblaze B2, MinIO, ...) via hand-rolled AWS SigV4 signing, and adds a
+    delete_file() method the r2client library this project started from
+    doesn't provide.
     """
 
-    def __init__(self, access_key: str, secret_key: str, endpoint: str, lang: str = "en"):
+    def __init__(self, access_key: str, secret_key: str, endpoint: str,
+                 region: str = "auto", lang: str = "en"):
         self.access_key = access_key
         self.secret_key = secret_key
         self.endpoint   = endpoint.rstrip("/")
+        self.region     = region
         self.lang       = lang
 
     # ── SigV4 helpers ────────────────────────────────────────────────────────
@@ -551,7 +614,7 @@ class R2Manager:
 
     def _signing_key(self, date_stamp: str) -> bytes:
         k = self._sign(("AWS4" + self.secret_key).encode("utf-8"), date_stamp)
-        k = self._sign(k, "auto")   # Cloudflare R2 region
+        k = self._sign(k, self.region)   # "auto" for R2; a real region elsewhere
         k = self._sign(k, "s3")
         return self._sign(k, "aws4_request")
 
@@ -565,14 +628,20 @@ class R2Manager:
         """
         return "/".join(_urlquote(seg, safe="") for seg in key.split("/"))
 
-    def _auth_headers(self, method: str, bucket: str, key: str = "") -> dict:
-        """Build minimal AWS SigV4 Authorization headers for the given request."""
+    def _auth_headers(self, method: str, bucket: str = "", key: str = "") -> dict:
+        """Build minimal AWS SigV4 Authorization headers for the given request.
+
+        An empty bucket targets the service root (e.g. ListBuckets).
+        """
         host       = self.endpoint.split("://", 1)[-1]
         now        = datetime.datetime.now(datetime.timezone.utc)
         amz_date   = now.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = now.strftime("%Y%m%d")
         enc_key    = self._encode_key(key)
-        uri        = f"/{bucket}/{enc_key}" if key else f"/{bucket}/"
+        if not bucket:
+            uri = "/"
+        else:
+            uri = f"/{bucket}/{enc_key}" if key else f"/{bucket}/"
         ph         = hashlib.sha256(b"").hexdigest()  # empty payload
 
         canonical_headers = (
@@ -587,7 +656,7 @@ class R2Manager:
         )
 
         algo       = "AWS4-HMAC-SHA256"
-        cred_scope = f"{date_stamp}/auto/s3/aws4_request"
+        cred_scope = f"{date_stamp}/{self.region}/s3/aws4_request"
         sts        = (
             f"{algo}\n{amz_date}\n{cred_scope}\n"
             + hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
@@ -684,7 +753,7 @@ class R2Manager:
         )
 
         algo       = "AWS4-HMAC-SHA256"
-        cred_scope = f"{date_stamp}/auto/s3/aws4_request"
+        cred_scope = f"{date_stamp}/{self.region}/s3/aws4_request"
         sts        = (
             f"{algo}\n{amz_date}\n{cred_scope}\n"
             + hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
@@ -705,6 +774,21 @@ class R2Manager:
         }
 
     # ── Public API ───────────────────────────────────────────────────────────
+
+    def list_buckets(self) -> list:
+        """Return the names of all buckets this credential can access."""
+        url      = f"{self.endpoint}/"
+        headers  = self._auth_headers("GET", "")
+        response = self._http("GET", url, headers=headers, timeout=30)
+        self._raise_for_status(response, "list")
+        ns    = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+        root  = ET.fromstring(response.content)
+        names = []
+        for item in root.findall(f"{ns}Buckets/{ns}Bucket"):
+            name = item.findtext(f"{ns}Name")
+            if name:
+                names.append(name)
+        return names
 
     def list_all_files(self, bucket: str) -> list:
         """Return a flat list of file metadata dicts: {key, size, last_modified}."""
@@ -769,21 +853,67 @@ class R2Manager:
         self._raise_for_status(resp, "mkdir")
 
 
-# ─── Setup / Credentials Dialog ───────────────────────────────────────────────
-class SetupDialog(tk.Toplevel):
-    """Modal dialog shown on first launch or when editing credentials."""
+# ─── Credential entries ────────────────────────────────────────────────────────
 
-    def __init__(self, parent, on_save_callback):
+class CredEntry:
+    """Runtime state for one configured bucket credential (may span multiple
+    buckets once probed, since a single token can grant access to several)."""
+
+    def __init__(self, cred_id: str, platform: str, access_key: str,
+                 secret_key: str, endpoint: str, region: str, lang: str = "en"):
+        self.id         = cred_id
+        self.platform   = platform
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.endpoint   = endpoint
+        self.region     = region
+        self.backend    = S3Backend(access_key, secret_key, endpoint, region=region, lang=lang)
+        self.buckets: list = []
+        self.status     = "checking"
+        self.status_msg = t(lang, "status_checking")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "platform": self.platform,
+            "access_key": self.access_key, "secret_key": self.secret_key,
+            "endpoint": self.endpoint, "region": self.region,
+        }
+
+
+def probe_credential(entry: "CredEntry", lang: str) -> None:
+    """Attempt to list buckets reachable by this credential; updates status
+    in place so the caller can just re-render after this returns."""
+    try:
+        buckets = entry.backend.list_buckets()
+        entry.buckets = buckets
+        entry.status = "valid"
+        entry.status_msg = (t(lang, "cred_status_valid", n=len(buckets)) if buckets
+                             else t(lang, "cred_status_valid_empty"))
+    except Exception as exc:
+        entry.buckets = []
+        entry.status = "invalid"
+        entry.status_msg = t(lang, "cred_status_invalid", err=str(exc)[:80])
+
+
+def _mask(s: str) -> str:
+    if len(s) <= 8:
+        return "●" * max(len(s), 4)
+    return s[:4] + "…" + s[-4:]
+
+
+# ─── Add-credential dialog ─────────────────────────────────────────────────────
+class AddCredentialDialog(tk.Toplevel):
+    """Small modal form for entering one new bucket credential."""
+
+    def __init__(self, parent, lang: str, on_submit):
         super().__init__(parent)
-        self.lang     = parent.lang
-        self._on_save = on_save_callback
-        self.title(t(self.lang, "setup_title", app=t(self.lang, "app_name")))
+        self.lang      = lang
+        self._on_submit = on_submit
+        self.title(t(lang, "add_cred_dialog_title"))
         self.resizable(False, False)
         self.configure(bg=C["bg"])
         self.grab_set()
         self._build()
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
-        # Centre over parent
         self.update_idletasks()
         pw = parent.winfo_rootx() + parent.winfo_width()  // 2
         ph = parent.winfo_rooty() + parent.winfo_height() // 2
@@ -792,74 +922,86 @@ class SetupDialog(tk.Toplevel):
 
     def _build(self):
         lang = self.lang
-        # Gradient-style top bar
-        top = tk.Frame(self, bg=C["accent"], height=56)
-        top.pack(fill="x")
-        top.pack_propagate(False)
-        tk.Label(
-            top, text=t(lang, "setup_topbar"),
-            bg=C["accent"], fg="#ffffff", font=("Segoe UI", 14, "bold"),
-        ).pack(pady=14)
-
-        tk.Label(
-            self,
-            text=t(lang, "setup_subtitle"),
-            bg=C["bg"], fg=C["fg2"], font=FONT_S, justify="center",
-        ).pack(pady=(14, 4))
+        tk.Frame(self, bg=C["accent"], height=4).pack(fill="x")
+        tk.Label(self, text=t(lang, "add_cred_dialog_title"),
+                 bg=C["bg"], fg=C["accent2"], font=FONT_B).pack(pady=(14, 6))
 
         frm = tk.Frame(self, bg=C["bg"])
-        frm.pack(padx=36, fill="x")
+        frm.pack(padx=28, fill="x")
 
-        existing = load_credentials()
+        tk.Label(frm, text=t(lang, "field_platform_label"), bg=C["bg"], fg=C["fg"],
+                 font=FONT_B, anchor="w").pack(fill="x", pady=(10, 2))
+        self._platform_map = {
+            t(lang, "platform_r2_label"): "r2",
+            t(lang, "platform_s3_label"): "s3_compatible",
+        }
+        self._platform_combo = ttk.Combobox(
+            frm, values=list(self._platform_map.keys()), state="readonly", font=FONT,
+        )
+        self._platform_combo.current(0)
+        self._platform_combo.pack(fill="x", ipady=4)
+
         fields = [
-            (t(lang, "field_access_key_label"), "R2_ACCESS_KEY", False),
-            (t(lang, "field_secret_key_label"), "R2_SECRET_KEY", True),
-            (t(lang, "field_endpoint_label"),   "R2_ENDPOINT",   False),
+            (t(lang, "field_access_key_label"), "ak", False),
+            (t(lang, "field_secret_key_label"), "sk", True),
+            (t(lang, "field_endpoint_label"),   "ep", False),
         ]
         self._vars: dict[str, tk.StringVar] = {}
-
-        for label, env_key, secret in fields:
-            tk.Label(
-                frm, text=label, bg=C["bg"], fg=C["fg"], font=FONT_B, anchor="w"
-            ).pack(fill="x", pady=(10, 2))
-            var = tk.StringVar(value=existing.get(env_key, ""))
+        for label, key, secret in fields:
+            tk.Label(frm, text=label, bg=C["bg"], fg=C["fg"], font=FONT_B,
+                     anchor="w").pack(fill="x", pady=(10, 2))
+            var = tk.StringVar()
             ent = tk.Entry(
-                frm, textvariable=var,
-                show="●" if secret else "",
-                bg=C["input_bg"], fg=C["fg"],
-                insertbackground=C["fg"],
-                relief="flat", font=FONT,
-                highlightthickness=1,
-                highlightcolor=C["accent"],
-                highlightbackground=C["border"],
+                frm, textvariable=var, show="●" if secret else "",
+                bg=C["input_bg"], fg=C["fg"], insertbackground=C["fg"],
+                relief="flat", font=FONT, highlightthickness=1,
+                highlightcolor=C["accent"], highlightbackground=C["border"],
             )
             ent.pack(fill="x", ipady=7)
-            self._vars[env_key] = var
+            self._vars[key] = var
 
-        # Buttons
-        btn_frame = tk.Frame(self, bg=C["bg"])
-        btn_frame.pack(pady=24)
-        tk.Button(
-            btn_frame, text=t(lang, "btn_connect"), command=self._save,
-            bg=C["accent"], fg="#ffffff", font=FONT_B,
-            relief="flat", cursor="hand2", padx=16, pady=8,
-            activebackground=C["accent2"], activeforeground="#ffffff",
-            bd=0,
-        ).pack(side="left", padx=8)
-        tk.Button(
-            btn_frame, text=t(lang, "btn_cancel"), command=self.destroy,
-            bg=C["btn_bg"], fg=C["fg2"], font=FONT,
-            relief="flat", cursor="hand2", padx=16, pady=8,
-            activebackground=C["btn_hover"], activeforeground=C["fg"],
-            bd=0,
-        ).pack(side="left", padx=8)
+        tk.Label(frm, text=t(lang, "field_region_label"), bg=C["bg"], fg=C["fg"],
+                 font=FONT_B, anchor="w").pack(fill="x", pady=(10, 2))
+        self._region_var = tk.StringVar(value="auto")
+        self._region_entry = tk.Entry(
+            frm, textvariable=self._region_var,
+            bg=C["input_bg"], fg=C["fg"], insertbackground=C["fg"],
+            relief="flat", font=FONT, highlightthickness=1,
+            highlightcolor=C["accent"], highlightbackground=C["border"],
+            state="disabled",
+        )
+        self._region_entry.pack(fill="x", ipady=7)
 
+        def _on_platform_change(_evt=None):
+            platform = self._platform_map[self._platform_combo.get()]
+            if platform == "r2":
+                self._region_var.set("auto")
+                self._region_entry.configure(state="disabled")
+            else:
+                if self._region_var.get() in ("", "auto"):
+                    self._region_var.set("us-east-1")
+                self._region_entry.configure(state="normal")
+        self._platform_combo.bind("<<ComboboxSelected>>", _on_platform_change)
 
-    def _save(self):
+        btn_row = tk.Frame(self, bg=C["bg"])
+        btn_row.pack(pady=20)
+        tk.Button(btn_row, text=t(lang, "btn_add_confirm"), command=self._submit,
+                  bg=C["accent"], fg="#ffffff", font=FONT_B,
+                  relief="flat", cursor="hand2", padx=14, pady=7, bd=0,
+                  activebackground=C["accent2"], activeforeground="#ffffff",
+                  ).pack(side="left", padx=8)
+        tk.Button(btn_row, text=t(lang, "btn_cancel"), command=self.destroy,
+                  bg=C["btn_bg"], fg=C["fg2"], font=FONT,
+                  relief="flat", cursor="hand2", padx=14, pady=7, bd=0,
+                  ).pack(side="left", padx=8)
+
+    def _submit(self):
         lang = self.lang
-        ak = self._vars["R2_ACCESS_KEY"].get().strip()
-        sk = self._vars["R2_SECRET_KEY"].get().strip()
-        ep = self._vars["R2_ENDPOINT"].get().strip()
+        platform = self._platform_map[self._platform_combo.get()]
+        ak = self._vars["ak"].get().strip()
+        sk = self._vars["sk"].get().strip()
+        ep = self._vars["ep"].get().strip()
+        region = self._region_var.get().strip() or ("auto" if platform == "r2" else "us-east-1")
         if not (ak and sk and ep):
             messagebox.showwarning(t(lang, "warn_missing_info_title"),
                                    t(lang, "warn_missing_info_body"), parent=self)
@@ -868,9 +1010,175 @@ class SetupDialog(tk.Toplevel):
             messagebox.showwarning(t(lang, "warn_bad_endpoint_title"),
                                    t(lang, "warn_bad_endpoint_body"), parent=self)
             return
-        save_credentials(ak, sk, ep)
-        self._on_save(ak, sk, ep)
         self.destroy()
+        self._on_submit(platform, ak, sk, ep, region)
+
+
+# ─── Credentials management dialog ─────────────────────────────────────────────
+class CredentialsDialog(tk.Toplevel):
+    """Modal dialog listing every configured bucket credential as a table,
+    with a '+' button to add more and auto-probing after each addition."""
+
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self._app = app
+        self.lang = app.lang
+        self.title(t(self.lang, "cred_dialog_title"))
+        self.resizable(False, False)
+        self.configure(bg=C["bg"])
+        self.grab_set()
+        self._build()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.update_idletasks()
+        pw = parent.winfo_rootx() + parent.winfo_width()  // 2
+        ph = parent.winfo_rooty() + parent.winfo_height() // 2
+        self.geometry(f"+{pw - self.winfo_width()//2}+{ph - self.winfo_height()//2}")
+        parent.wait_window(self)
+
+    def _build(self):
+        lang = self.lang
+        top = tk.Frame(self, bg=C["accent"], height=56)
+        top.pack(fill="x")
+        top.pack_propagate(False)
+        tk.Label(
+            top, text="☁  " + t(lang, "cred_dialog_title"),
+            bg=C["accent"], fg="#ffffff", font=("Segoe UI", 14, "bold"),
+        ).pack(pady=14)
+
+        tk.Label(
+            self, text=t(lang, "cred_dialog_subtitle"),
+            bg=C["bg"], fg=C["fg2"], font=FONT_S, justify="center", wraplength=580,
+        ).pack(pady=(14, 4))
+
+        hdr_row = tk.Frame(self, bg=C["bg"])
+        hdr_row.pack(fill="x", padx=24, pady=(10, 4))
+        tk.Label(hdr_row, text=t(lang, "cred_configured_label"),
+                 bg=C["bg"], fg=C["fg"], font=FONT_B).pack(side="left")
+        tk.Button(
+            hdr_row, text=" + ", command=self._add_credential,
+            bg=C["accent"], fg="#ffffff", font=FONT_B,
+            relief="flat", cursor="hand2", padx=10, pady=2, bd=0,
+            activebackground=C["accent2"], activeforeground="#ffffff",
+        ).pack(side="right")
+
+        table_frame = tk.Frame(self, bg=C["bg"])
+        table_frame.pack(padx=24, fill="both", expand=True)
+
+        cols = ("platform", "access_key", "secret_key", "endpoint", "status")
+        self._tree = ttk.Treeview(
+            table_frame, columns=cols, show="headings", selectmode="browse", height=6,
+        )
+        for col, heading, width in [
+            ("platform",   t(lang, "cred_col_platform"),   90),
+            ("access_key", t(lang, "cred_col_access_key"), 130),
+            ("secret_key", t(lang, "cred_col_secret_key"), 110),
+            ("endpoint",   t(lang, "cred_col_endpoint"),   210),
+            ("status",     t(lang, "cred_col_status"),     170),
+        ]:
+            self._tree.heading(col, text=heading)
+            self._tree.column(col, width=width, minwidth=60, anchor="w")
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self._tree.pack(fill="both", expand=True, pady=(4, 8))
+        self._tree.bind("<Button-3>", self._show_row_menu)
+        self._tree.bind("<Delete>", lambda _: self._delete_selected())
+
+        mk = {
+            "bg": C["panel"], "fg": C["fg"],
+            "activebackground": C["selected"], "activeforeground": C["accent2"],
+            "relief": "flat",
+        }
+        self._ctx = tk.Menu(self, tearoff=0, **mk)
+        self._ctx.add_command(label=t(lang, "ctx_recheck"), command=self._recheck_selected)
+        self._ctx.add_command(label=t(lang, "ctx_delete_cred"), command=self._delete_selected)
+
+        btn_frame = tk.Frame(self, bg=C["bg"])
+        btn_frame.pack(pady=(4, 20))
+        tk.Button(
+            btn_frame, text=t(lang, "btn_done"), command=self.destroy,
+            bg=C["accent"], fg="#ffffff", font=FONT_B,
+            relief="flat", cursor="hand2", padx=16, pady=8, bd=0,
+            activebackground=C["accent2"], activeforeground="#ffffff",
+        ).pack()
+
+        self._refresh_table()
+
+    def _platform_label(self, platform: str) -> str:
+        return t(self.lang, "platform_r2_label") if platform == "r2" else t(self.lang, "platform_s3_label")
+
+    def _refresh_table(self):
+        self._tree.delete(*self._tree.get_children())
+        for cred in self._app.creds:
+            self._tree.insert(
+                "", "end", iid=cred.id,
+                values=(self._platform_label(cred.platform), _mask(cred.access_key),
+                        "●" * 8, cred.endpoint, cred.status_msg),
+            )
+
+    def _add_credential(self):
+        AddCredentialDialog(self, self.lang, self._on_new_credential)
+
+    def _on_new_credential(self, platform, ak, sk, ep, region):
+        entry = CredEntry(str(uuid.uuid4()), platform, ak, sk, ep, region, lang=self._app.lang)
+        self._app.creds.append(entry)
+        self._app.persist_credentials()
+        self._refresh_table()
+        self._probe(entry)
+
+    def _probe(self, entry: CredEntry):
+        entry.status = "checking"
+        entry.status_msg = t(self.lang, "status_checking")
+        self._refresh_table()
+
+        def _run():
+            probe_credential(entry, self.lang)
+            self.after(0, self._on_probe_done)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_probe_done(self):
+        try:
+            self._refresh_table()
+        except tk.TclError:
+            pass  # dialog already closed
+        self._app.on_credentials_changed()
+
+    def _selected_entry(self):
+        sel = self._tree.selection()
+        if not sel:
+            return None
+        cred_id = sel[0]
+        for c in self._app.creds:
+            if c.id == cred_id:
+                return c
+        return None
+
+    def _show_row_menu(self, event):
+        iid = self._tree.identify_row(event.y)
+        if iid:
+            self._tree.selection_set(iid)
+            self._ctx.post(event.x_root, event.y_root)
+
+    def _recheck_selected(self):
+        entry = self._selected_entry()
+        if entry:
+            self._probe(entry)
+
+    def _delete_selected(self):
+        entry = self._selected_entry()
+        if not entry:
+            return
+        if not messagebox.askyesno(
+            t(self.lang, "confirm_delete_cred_title"),
+            t(self.lang, "confirm_delete_cred_body", endpoint=entry.endpoint),
+            parent=self,
+        ):
+            return
+        self._app.creds = [c for c in self._app.creds if c.id != entry.id]
+        self._app.persist_credentials()
+        self._refresh_table()
+        self._app.on_credentials_changed()
 
 
 # ─── Main Application Window ──────────────────────────────────────────────────
@@ -890,11 +1198,14 @@ class S3ClientApp(tk.Tk):
             pass
 
         # ── State ────────────────────────────────────────────────────────────
-        self._r2:              R2Manager | None = None
-        self._current_bucket   = tk.StringVar()
+        self.creds:             list = []   # CredEntry list, one per configured credential
         self._current_prefix   = ""          # current "folder" path e.g. "imgs/"
-        self._all_files:       list = []
+        self._all_files:       list = []     # fused across every valid (cred, bucket) pair
+        self._file_index:      dict = {}     # file-list row iid -> file dict
+        self._dir_index:       dict = {}     # file-list row iid -> folder prefix
+        self._row_seq          = 0
         self._status_text      = tk.StringVar(value=t(self.lang, "status_not_connected"))
+        self._conn_summary_var = tk.StringVar(value=t(self.lang, "conn_summary_none"))
         self._sort_reverse:    dict = {}
 
         # ── Build UI ─────────────────────────────────────────────────────────
@@ -916,25 +1227,23 @@ class S3ClientApp(tk.Tk):
 
     def _rebuild_ui(self):
         """Tear down and rebuild every widget after a language switch, keeping
-        in-memory state (connection, current bucket/prefix, loaded files)."""
+        in-memory state (credentials, loaded files, current prefix)."""
         self.config(menu="")
         for w in self.winfo_children():
             w.destroy()
         self._build_ui()
-        if self._all_files or self._current_bucket.get().strip():
+        self._update_conn_summary()
+        if self._all_files or self._valid_targets():
             self._populate_folder_tree()
             self._populate_file_list()
-        elif self._r2:
-            host = self._r2.endpoint.split("//", 1)[-1].split("/")[0]
-            self._set_status(t(self.lang, "connected_status", host=host))
         else:
             self._set_status(t(self.lang, "status_not_connected"))
 
     def _toggle_language(self):
         self.lang = "en" if self.lang == "zh" else "zh"
         set_ui_language_override(self.lang)
-        if self._r2:
-            self._r2.lang = self.lang
+        for cred in self.creds:
+            cred.backend.lang = self.lang
         self._rebuild_ui()
 
     # ── TTK / widget styles ──────────────────────────────────────────────────
@@ -1000,7 +1309,7 @@ class S3ClientApp(tk.Tk):
 
         em = tk.Menu(mb, tearoff=0, **mk)
         em.add_command(label=t(lang, "menu_delete_selected"), command=self._do_delete)
-        em.add_command(label=t(lang, "menu_refresh"),         command=self._do_refresh)
+        em.add_command(label=t(lang, "menu_refresh"),         command=self._do_refresh_all)
         em.add_command(label=t(lang, "menu_go_up"),           command=self._go_up)
         mb.add_cascade(label=t(lang, "menu_actions"), menu=em)
 
@@ -1031,18 +1340,8 @@ class S3ClientApp(tk.Tk):
         right = tk.Frame(hdr, bg=C["hdr_bg"])
         right.pack(side="right", padx=18)
 
-        tk.Label(right, text=t(lang, "header_bucket_label"), bg=C["hdr_bg"],
-                 fg="#d0f0e0", font=FONT).pack(side="left", padx=(0, 6))
-
-        # Combobox with rounded look via Frame border
-        cb_wrap = tk.Frame(right, bg="#ffffff", padx=1, pady=1)
-        cb_wrap.pack(side="left")
-        self._bucket_entry = ttk.Combobox(
-            cb_wrap, textvariable=self._current_bucket, width=24, font=FONT,
-        )
-        self._bucket_entry.pack()
-        self._bucket_entry.bind("<Return>",             lambda _: self._do_refresh())
-        self._bucket_entry.bind("<<ComboboxSelected>>", lambda _: self._do_refresh())
+        tk.Label(right, textvariable=self._conn_summary_var, bg=C["hdr_bg"],
+                 fg="#d0f0e0", font=FONT).pack(side="left", padx=(0, 10))
 
         tk.Button(
             right, text="⚙", command=self._open_settings,
@@ -1081,7 +1380,7 @@ class S3ClientApp(tk.Tk):
             None,
             (t(lang, "tb_mkdir"),  self._do_mkdir,  C["btn_bg"],  C["fg"]),
             (t(lang, "tb_go_up"),  self._go_up,     C["btn_bg"],  C["fg"]),
-            (t(lang, "tb_refresh"), self._do_refresh, C["btn_bg"],  C["fg"]),
+            (t(lang, "tb_refresh"), self._do_refresh_all, C["btn_bg"],  C["fg"]),
         ]
         for item in items:
             if item is None:
@@ -1248,26 +1547,84 @@ class S3ClientApp(tk.Tk):
     # ── Connection ────────────────────────────────────────────────────────────
 
     def _auto_connect(self):
-        if has_credentials():
-            c = load_credentials()
-            self._connect(c["R2_ACCESS_KEY"], c["R2_SECRET_KEY"], c["R2_ENDPOINT"])
-        else:
-            SetupDialog(self, self._connect)
+        entries = load_credentials_list()
+        if not entries:
+            CredentialsDialog(self, self)
+            self._update_conn_summary()
+            return
+        self.creds = [
+            CredEntry(e["id"], e["platform"], e["access_key"], e["secret_key"],
+                      e["endpoint"], e["region"], lang=self.lang)
+            for e in entries
+        ]
+        self._probe_all_creds()
 
-    def _connect(self, ak: str, sk: str, ep: str):
-        self._r2 = R2Manager(ak, sk, ep, lang=self.lang)
-        host = ep.split("//", 1)[-1].split("/")[0]
-        self._set_status(t(self.lang, "connected_status", host=host))
-        # Restore last-used bucket if none already set in the UI
-        if not self._current_bucket.get().strip():
-            saved = load_last_bucket()
-            if saved:
-                self._current_bucket.set(saved)
-        if self._current_bucket.get().strip():
-            self._do_refresh()
+    def _probe_all_creds(self):
+        self._set_status(t(self.lang, "status_probing", n=len(self.creds)))
+
+        def _run():
+            for cred in self.creds:
+                probe_credential(cred, self.lang)
+            self.after(0, self._on_all_probed)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_all_probed(self):
+        self._update_conn_summary()
+        if self._valid_targets():
+            self._do_refresh_all()
+        else:
+            self._set_status(t(self.lang, "status_not_connected"))
 
     def _open_settings(self):
-        SetupDialog(self, self._connect)
+        CredentialsDialog(self, self)
+        self._update_conn_summary()
+
+    def persist_credentials(self):
+        save_credentials_list([c.to_dict() for c in self.creds])
+
+    def on_credentials_changed(self):
+        """Called by CredentialsDialog after any add/delete/re-verify."""
+        self._update_conn_summary()
+        self._do_refresh_all()
+
+    def _update_conn_summary(self):
+        if not self.creds:
+            self._conn_summary_var.set(t(self.lang, "conn_summary_none"))
+            return
+        valid = [c for c in self.creds if c.status == "valid"]
+        n_buckets = sum(len(c.buckets) for c in valid)
+        self._conn_summary_var.set(t(self.lang, "conn_summary", n_buckets=n_buckets,
+                                     n_valid=len(valid), n_total=len(self.creds)))
+
+    def _valid_targets(self) -> list:
+        """Return every (CredEntry, bucket) pair currently usable."""
+        return [(c, b) for c in self.creds if c.status == "valid" for b in c.buckets]
+
+    def _need_target(self) -> bool:
+        if not self._valid_targets():
+            messagebox.showwarning(t(self.lang, "warn_no_target_title"),
+                                   t(self.lang, "warn_no_target_body"), parent=self)
+            return False
+        return True
+
+    def _least_used_target(self):
+        """Pick the (CredEntry, bucket) pair with the smallest known total size."""
+        targets = self._valid_targets()
+        if not targets:
+            messagebox.showwarning(t(self.lang, "warn_no_target_title"),
+                                   t(self.lang, "warn_no_target_body"), parent=self)
+            return None
+        usage = {(c.id, b): 0 for c, b in targets}
+        for f in self._all_files:
+            k = (f["_cred"].id, f["_bucket"])
+            if k in usage:
+                usage[k] += f["size"]
+        best_key = min(usage, key=usage.get)
+        for c, b in targets:
+            if (c.id, b) == best_key:
+                return c, b
+        return targets[0]
 
     # ── Folder tree population ────────────────────────────────────────────────
 
@@ -1304,9 +1661,11 @@ class S3ClientApp(tk.Tk):
     def _populate_file_list(self):
         lang = self.lang
         self._file_list.delete(*self._file_list.get_children())
+        self._file_index.clear()
+        self._dir_index.clear()
         prefix   = self._current_prefix
         sub_dirs = set()
-        root_keys = []
+        root_entries = []
 
         for f in self._all_files:
             key = f["key"]
@@ -1316,22 +1675,25 @@ class S3ClientApp(tk.Tk):
             if "/" in rest:
                 sub_dirs.add(rest.split("/")[0])
             else:
-                root_keys.append(f)
+                root_entries.append(f)
 
         row = 0
         # Sub-folders first
         for sub in sorted(sub_dirs):
             tag = ("folder", "even" if row % 2 == 0 else "odd")
+            iid = f"__d{self._row_seq}"
+            self._row_seq += 1
+            self._dir_index[iid] = prefix + sub + "/"
             self._file_list.insert(
                 "", "end",
                 values=(f"📁   {sub}/", t(lang, "dash"), t(lang, "type_folder"), t(lang, "dash")),
-                iid=f"__dir__{prefix}{sub}",
+                iid=iid,
                 tags=tag,
             )
             row += 1
 
         # Files
-        for f in sorted(root_keys, key=lambda x: x["key"]):
+        for f in sorted(root_entries, key=lambda x: x["key"]):
             key  = f["key"]
             name = key.split("/")[-1]
             ext  = name.rsplit(".", 1)[-1].lower() if "." in name else t(lang, "dash")
@@ -1339,19 +1701,22 @@ class S3ClientApp(tk.Tk):
             mtime = f["last_modified"][:19].replace("T", " ") if f["last_modified"] else t(lang, "dash")
             icon  = _file_icon(ext)
             tag   = ("even" if row % 2 == 0 else "odd",)
+            iid = f"__f{self._row_seq}"
+            self._row_seq += 1
+            self._file_index[iid] = f
             self._file_list.insert(
                 "", "end",
                 values=(f"{icon}   {name}", size, ext, mtime),
-                iid=key,
+                iid=iid,
                 tags=tag,
             )
             row += 1
 
-        total = len(root_keys) + len(sub_dirs)
-        bucket = self._current_bucket.get()
+        total = len(root_entries) + len(sub_dirs)
+        n_buckets = len({(f["_cred"].id, f["_bucket"]) for f in self._all_files})
         total_size = _fmt_size(sum(f["size"] for f in self._all_files))
         self._set_status(t(lang, "status_bucket_summary",
-                           bucket=bucket, count=len(self._all_files),
+                           n_buckets=n_buckets, count=len(self._all_files),
                            size=total_size, prefix=prefix, n=total))
         self._path_var.set("/" + prefix)
 
@@ -1360,9 +1725,9 @@ class S3ClientApp(tk.Tk):
         if not sel:
             return
         iid = sel[0]
-        if iid.startswith("__dir__"):
+        if iid in self._dir_index:
             # Navigate into sub-directory
-            new_prefix = iid[len("__dir__"):] + "/"
+            new_prefix = self._dir_index[iid]
             self._current_prefix = new_prefix
             self._path_var.set("/" + new_prefix)
             self._populate_file_list()
@@ -1396,11 +1761,11 @@ class S3ClientApp(tk.Tk):
         sel = self._file_list.selection()
         if not sel:
             return
-        key = sel[0]
-        if not key.startswith("__dir__"):
+        f = self._file_index.get(sel[0])
+        if f:
             self.clipboard_clear()
-            self.clipboard_append(key)
-            self._set_status(t(self.lang, "status_copied_key", key=key))
+            self.clipboard_append(f["key"])
+            self._set_status(t(self.lang, "status_copied_key", key=f["key"]))
 
     # ── Column sort ───────────────────────────────────────────────────────────
 
@@ -1411,81 +1776,84 @@ class S3ClientApp(tk.Tk):
             for k in self._file_list.get_children("")
         ]
         # Folders always on top
-        folders = [(v, k) for v, k in items if k.startswith("__dir__")]
-        files   = [(v, k) for v, k in items if not k.startswith("__dir__")]
+        folders = [(v, k) for v, k in items if k in self._dir_index]
+        files   = [(v, k) for v, k in items if k not in self._dir_index]
         files.sort(key=lambda x: x[0].lower(), reverse=rev)
         for idx, (_, k) in enumerate(folders + files):
             self._file_list.move(k, "", idx)
         self._sort_reverse[col] = not rev
 
-    # ── Guard helpers ────────────────────────────────────────────────────────
+    # ── Selection helpers ────────────────────────────────────────────────────
 
-    def _need_connection(self) -> bool:
-        if not self._r2:
-            messagebox.showwarning(t(self.lang, "warn_not_connected_title"),
-                                   t(self.lang, "warn_not_connected_body"), parent=self)
-            return False
-        return True
-
-    def _need_bucket(self) -> bool:
-        if not self._current_bucket.get().strip():
-            messagebox.showwarning(t(self.lang, "warn_no_bucket_title"),
-                                   t(self.lang, "warn_no_bucket_body"), parent=self)
-            return False
-        return True
-
-    def _selected_file_keys(self) -> list[str]:
-        """Return selected file keys, excluding folder rows."""
-        return [
-            iid for iid in self._file_list.selection()
-            if not iid.startswith("__dir__")
-        ]
-
-    def _selected_delete_targets(self) -> tuple[list[str], list[str]]:
-        """Return (file_keys, folder_prefixes) for the current selection."""
-        file_keys, folder_prefixes = [], []
+    def _selected_file_entries(self) -> list:
+        """Return selected file entries (dicts with key/_cred/_bucket), excluding folders."""
+        out = []
         for iid in self._file_list.selection():
-            if iid.startswith("__dir__"):
-                folder_prefixes.append(iid[len("__dir__"):] + "/")
+            f = self._file_index.get(iid)
+            if f:
+                out.append(f)
+        return out
+
+    def _selected_delete_targets(self):
+        """Return (file_entries, folder_prefixes) for the current selection."""
+        file_entries, folder_prefixes = [], []
+        for iid in self._file_list.selection():
+            if iid in self._dir_index:
+                folder_prefixes.append(self._dir_index[iid])
             else:
-                file_keys.append(iid)
-        return file_keys, folder_prefixes
+                f = self._file_index.get(iid)
+                if f:
+                    file_entries.append(f)
+        return file_entries, folder_prefixes
 
     # ── Operations ───────────────────────────────────────────────────────────
 
-    def _do_refresh(self):
-        if not self._need_connection() or not self._need_bucket():
+    def _do_refresh_all(self):
+        targets = self._valid_targets()
+        if not targets:
+            self._set_status(t(self.lang, "status_not_connected"))
             return
-        bucket = self._current_bucket.get().strip()
-        self._set_status(t(self.lang, "status_loading", bucket=bucket))
+        self._set_status(t(self.lang, "status_loading_n", n=len(targets)))
         self._show_progress(True)
         self._progress_var.set(0)
 
         def _run():
-            try:
-                files = self._r2.list_all_files(bucket)
-                self.after(0, lambda: self._on_refresh_done(files, bucket))
-            except Exception as exc:
-                self.after(0, lambda e=exc: self._on_error(e))
+            all_files = []
+            errors = []
+            for i, (cred, bucket) in enumerate(targets, 1):
+                try:
+                    files = cred.backend.list_all_files(bucket)
+                    for f in files:
+                        f["_cred"] = cred
+                        f["_bucket"] = bucket
+                    all_files.extend(files)
+                except Exception as exc:
+                    errors.append(f"{bucket}: {exc}")
+                self.after(0, lambda v=i/len(targets)*100: self._progress_var.set(v))
+            self.after(0, lambda: self._on_refresh_all_done(all_files, errors))
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _on_refresh_done(self, files: list, bucket: str):
-        save_last_bucket(bucket)   # persist on successful load
+    def _on_refresh_all_done(self, files: list, errors: list):
         self._all_files = files
         self._populate_folder_tree()
         self._populate_file_list()
         self._show_progress(False)
+        if errors:
+            self._set_status(t(self.lang, "status_partial_errors", errors="; ".join(errors[:2])))
 
     def _do_upload(self):
-        if not self._need_connection() or not self._need_bucket():
+        if not self._need_target():
             return
         paths = filedialog.askopenfilenames(
             parent=self, title=t(self.lang, "dlg_choose_upload_files")
         )
         if not paths:
             return
-        bucket = self._current_bucket.get().strip()
+        target = self._least_used_target()
+        if target is None:
+            return
+        cred, bucket = target
         prefix = self._current_prefix
         total  = len(paths)
         self._show_progress(True)
@@ -1498,21 +1866,21 @@ class S3ClientApp(tk.Tk):
                 self.after(0, lambda k=r2_key: self._set_status(t(self.lang, "status_uploading", key=k)))
                 self.after(0, lambda v=i/total*100: self._progress_var.set(v))
                 try:
-                    self._r2.upload_file(bucket, local_path, r2_key)
+                    cred.backend.upload_file(bucket, local_path, r2_key)
                     ok += 1
                 except Exception as exc:
                     fail += 1
                     self.after(0, lambda e=exc: messagebox.showerror(
                         t(self.lang, "err_upload_title"), str(e), parent=self))
             self.after(0, lambda: self._set_status(
-                t(self.lang, "status_upload_done", ok=ok, fail=fail)))
+                t(self.lang, "status_upload_done_target", ok=ok, fail=fail, bucket=bucket)))
             self.after(0, lambda: self._show_progress(False))
-            self.after(0, self._do_refresh)
+            self.after(0, self._do_refresh_all)
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _do_upload_folder(self):
-        if not self._need_connection() or not self._need_bucket():
+        if not self._need_target():
             return
         folder = filedialog.askdirectory(parent=self, title=t(self.lang, "dlg_choose_upload_folder"))
         if not folder:
@@ -1523,7 +1891,10 @@ class S3ClientApp(tk.Tk):
             messagebox.showinfo(t(self.lang, "warn_empty_folder_title"),
                                 t(self.lang, "warn_empty_folder_body"), parent=self)
             return
-        bucket = self._current_bucket.get().strip()
+        target = self._least_used_target()
+        if target is None:
+            return
+        cred, bucket = target
         prefix = self._current_prefix + base.name + "/"
         total  = len(local_paths)
         self._show_progress(True)
@@ -1536,43 +1907,41 @@ class S3ClientApp(tk.Tk):
                 self.after(0, lambda k=r2_key: self._set_status(t(self.lang, "status_uploading", key=k)))
                 self.after(0, lambda v=i/total*100: self._progress_var.set(v))
                 try:
-                    self._r2.upload_file(bucket, str(local_path), r2_key)
+                    cred.backend.upload_file(bucket, str(local_path), r2_key)
                     ok += 1
                 except Exception as exc:
                     fail += 1
                     self.after(0, lambda e=exc: messagebox.showerror(
                         t(self.lang, "err_upload_title"), str(e), parent=self))
             self.after(0, lambda: self._set_status(
-                t(self.lang, "status_upload_folder_done", ok=ok, fail=fail)))
+                t(self.lang, "status_upload_folder_done_target", ok=ok, fail=fail, bucket=bucket)))
             self.after(0, lambda: self._show_progress(False))
-            self.after(0, self._do_refresh)
+            self.after(0, self._do_refresh_all)
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _do_download(self):
-        if not self._need_connection():
-            return
-        keys = self._selected_file_keys()
-        if not keys:
+        entries = self._selected_file_entries()
+        if not entries:
             messagebox.showinfo(t(self.lang, "info_no_files_title"),
                                 t(self.lang, "info_no_files_body"), parent=self)
             return
         dest_dir = filedialog.askdirectory(parent=self, title=t(self.lang, "dlg_choose_download_dir"))
         if not dest_dir:
             return
-        bucket = self._current_bucket.get().strip()
-        total  = len(keys)
+        total = len(entries)
         self._show_progress(True)
 
         def _run():
             ok = fail = 0
-            for i, key in enumerate(keys, 1):
+            for i, f in enumerate(entries, 1):
+                key   = f["key"]
                 fname = key.split("/")[-1]
                 dest  = str(Path(dest_dir) / fname)
                 self.after(0, lambda k=key: self._set_status(t(self.lang, "status_downloading", key=k)))
                 self.after(0, lambda v=i/total*100: self._progress_var.set(v))
                 try:
-                    self._r2.download_file(bucket, key, dest)
+                    f["_cred"].backend.download_file(f["_bucket"], key, dest)
                     ok += 1
                 except Exception as exc:
                     fail += 1
@@ -1585,7 +1954,7 @@ class S3ClientApp(tk.Tk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _do_mkdir(self):
-        if not self._need_connection() or not self._need_bucket():
+        if not self._need_target():
             return
         lang = self.lang
 
@@ -1629,15 +1998,18 @@ class S3ClientApp(tk.Tk):
                 messagebox.showwarning(t(lang, "warn_bad_chars_title"),
                                        t(lang, "warn_bad_chars_body"), parent=dlg)
                 return
+            target = self._least_used_target()
+            if target is None:
+                return
+            cred, bucket = target
             dlg.destroy()
-            bucket  = self._current_bucket.get().strip()
-            key     = self._current_prefix + raw + "/"
-            self._set_status(t(lang, "status_mkdir_creating", key=key))
+            key = self._current_prefix + raw + "/"
+            self._set_status(t(lang, "status_mkdir_creating_target", key=key, bucket=bucket))
             def _run():
                 try:
-                    self._r2.create_folder(bucket, key)
+                    cred.backend.create_folder(bucket, key)
                     self.after(0, lambda: self._set_status(t(lang, "status_mkdir_done", name=raw)))
-                    self.after(0, self._do_refresh)
+                    self.after(0, self._do_refresh_all)
                 except Exception as exc:
                     self.after(0, lambda e=exc: self._on_error(e, title=t(lang, "err_mkdir_title")))
             threading.Thread(target=_run, daemon=True).start()
@@ -1657,36 +2029,41 @@ class S3ClientApp(tk.Tk):
         self.wait_window(dlg)
 
     def _do_delete(self):
-        if not self._need_connection():
-            return
         lang = self.lang
-        file_keys, folder_prefixes = self._selected_delete_targets()
-        if not file_keys and not folder_prefixes:
+        file_entries, folder_prefixes = self._selected_delete_targets()
+        if not file_entries and not folder_prefixes:
             messagebox.showinfo(t(lang, "info_no_items_title"),
                                 t(lang, "info_no_items_body"), parent=self)
             return
 
-        # Expand each selected folder into the full set of object keys it
-        # contains (including its own placeholder object, if any) so the
-        # whole subtree is removed, not just the folder row.
-        all_keys = set(file_keys)
+        # Expand each selected folder (across every fused bucket) into the
+        # full set of (cred, bucket, key) triples it contains, including its
+        # own placeholder object if any, so the whole subtree is removed.
+        seen = set()
+        targets = []
+        for f in file_entries:
+            sig = (f["_cred"].id, f["_bucket"], f["key"])
+            if sig not in seen:
+                seen.add(sig)
+                targets.append((f["_cred"], f["_bucket"], f["key"]))
         for prefix in folder_prefixes:
-            all_keys.add(prefix)
             for f in self._all_files:
                 if f["key"].startswith(prefix):
-                    all_keys.add(f["key"])
-        keys = sorted(all_keys)
-        if not keys:
+                    sig = (f["_cred"].id, f["_bucket"], f["key"])
+                    if sig not in seen:
+                        seen.add(sig)
+                        targets.append((f["_cred"], f["_bucket"], f["key"]))
+        if not targets:
             return
 
-        names = [k.split("/")[-1] for k in file_keys]
+        names = [k.split("/")[-1] for _, _, k in targets if not k.endswith("/")]
         names += [p.rstrip("/").split("/")[-1] + "/" for p in folder_prefixes]
         preview = "\n".join(names[:6])
         if len(names) > 6:
             preview += t(lang, "delete_more_items", n=len(names) - 6)
         folder_note = ""
         if folder_prefixes:
-            folder_note = t(lang, "delete_folder_note", n=len(folder_prefixes), m=len(keys))
+            folder_note = t(lang, "delete_folder_note", n=len(folder_prefixes), m=len(targets))
 
         if not messagebox.askyesno(
             t(lang, "confirm_delete_title"),
@@ -1694,17 +2071,16 @@ class S3ClientApp(tk.Tk):
             parent=self,
         ):
             return
-        bucket = self._current_bucket.get().strip()
-        total  = len(keys)
+        total = len(targets)
         self._show_progress(True)
 
         def _run():
             ok = fail = 0
-            for i, key in enumerate(keys, 1):
+            for i, (cred, bucket, key) in enumerate(targets, 1):
                 self.after(0, lambda k=key: self._set_status(t(lang, "status_deleting", key=k)))
                 self.after(0, lambda v=i/total*100: self._progress_var.set(v))
                 try:
-                    self._r2.delete_file(bucket, key)
+                    cred.backend.delete_file(bucket, key)
                     ok += 1
                 except FileNotFoundError:
                     # Implicit folder had no placeholder object – nothing to do.
@@ -1716,7 +2092,7 @@ class S3ClientApp(tk.Tk):
             self.after(0, lambda: self._set_status(
                 t(lang, "status_delete_done", ok=ok, fail=fail)))
             self.after(0, lambda: self._show_progress(False))
-            self.after(0, self._do_refresh)
+            self.after(0, self._do_refresh_all)
 
         threading.Thread(target=_run, daemon=True).start()
 
