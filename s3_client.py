@@ -221,12 +221,13 @@ def save_credentials_list(entries: list) -> None:
     """Persist the full credential list (DPAPI-encrypting each secret) as a
     single JSON-encoded user environment variable."""
     serializable = [{
-        "id":         e["id"],
-        "platform":   e["platform"],
-        "access_key": _dpapi_protect(e["access_key"]),
-        "secret_key": _dpapi_protect(e["secret_key"]),
-        "endpoint":   e["endpoint"],
-        "region":     e.get("region", "auto"),
+        "id":           e["id"],
+        "platform":     e["platform"],
+        "access_key":   _dpapi_protect(e["access_key"]),
+        "secret_key":   _dpapi_protect(e["secret_key"]),
+        "endpoint":     e["endpoint"],
+        "region":       e.get("region", "auto"),
+        "free_tier_gb": e.get("free_tier_gb", 0.0),
     } for e in entries]
     data = json.dumps(serializable, ensure_ascii=False)
     _reg_write(_CRED_LIST_ENV, data)
@@ -243,12 +244,13 @@ def load_credentials_list() -> list:
         except Exception:
             stored = []
         entries = [{
-            "id":         e.get("id") or str(uuid.uuid4()),
-            "platform":   e.get("platform", "r2"),
-            "access_key": _dpapi_unprotect(e.get("access_key", "")),
-            "secret_key": _dpapi_unprotect(e.get("secret_key", "")),
-            "endpoint":   e.get("endpoint", ""),
-            "region":     e.get("region", "auto"),
+            "id":           e.get("id") or str(uuid.uuid4()),
+            "platform":     e.get("platform", "r2"),
+            "access_key":   _dpapi_unprotect(e.get("access_key", "")),
+            "secret_key":   _dpapi_unprotect(e.get("secret_key", "")),
+            "endpoint":     e.get("endpoint", ""),
+            "region":       e.get("region", "auto"),
+            "free_tier_gb": e.get("free_tier_gb", 0.0),
         } for e in stored]
         if entries:
             return entries
@@ -261,6 +263,7 @@ def load_credentials_list() -> list:
             "secret_key": legacy["R2_SECRET_KEY"],
             "endpoint":   legacy["R2_ENDPOINT"],
             "region":     "auto",
+            "free_tier_gb": 10.0,
         }
         save_credentials_list([entry])
         return [entry]
@@ -278,6 +281,7 @@ STRINGS = {
         "field_endpoint_label":   "端点地址（Endpoint URL）",
         "field_platform_label":   "平台",
         "field_region_label":     "区域（Region）",
+        "field_free_tier_label":  "免费容量（GB，0 表示不限制/不追踪）",
         "platform_r2_label":      "Cloudflare R2",
         "platform_s3_label":      "通用 S3 兼容（AWS S3 / Backblaze B2 / MinIO 等）",
         "btn_cancel":  "  取消  ",
@@ -288,17 +292,24 @@ STRINGS = {
         "warn_missing_info_body":  "请填写全部必填项。",
         "warn_bad_endpoint_title": "端点地址无效",
         "warn_bad_endpoint_body":  "端点地址必须以 http:// 或 https:// 开头。",
+        "warn_invalid_number_title": "数值无效",
+        "warn_invalid_number_body":  "请输入一个大于等于 0 的数字。",
 
         "cred_dialog_title":    "S3 存储桶凭证管理",
         "cred_dialog_subtitle": "凭证以用户环境变量形式保存（密钥经 DPAPI 加密），不会写入任何磁盘文件。添加后将自动探测有效性与可访问的存储桶。",
         "cred_configured_label": "已配置的凭证",
-        "cred_col_platform":    "平台",
-        "cred_col_access_key":  "访问密钥 ID",
-        "cred_col_secret_key":  "机密访问密钥",
-        "cred_col_endpoint":    "端点地址",
-        "cred_col_status":      "凭证状态",
+        "cred_col_platform":       "平台",
+        "cred_col_access_key":     "访问密钥 ID",
+        "cred_col_secret_key":     "机密访问密钥",
+        "cred_col_endpoint":       "端点地址",
+        "cred_col_status":         "凭证状态",
+        "cred_col_free_capacity":  "免费容量",
+        "cred_col_usage":          "当前使用量",
+        "cred_col_usage_pct":      "免费容量占比",
         "ctx_recheck":          "🔄  重新验证",
         "ctx_delete_cred":      "🗑  删除",
+        "ctx_edit_free_tier":   "✏️  编辑免费容量…",
+        "edit_free_tier_dialog_title": "编辑免费容量",
         "confirm_delete_cred_title": "确认删除",
         "confirm_delete_cred_body":  "确定要删除这条凭证吗？\n\n{endpoint}",
         "add_cred_dialog_title": "添加存储桶凭证",
@@ -419,6 +430,7 @@ STRINGS = {
         "field_endpoint_label":   "Endpoint URL",
         "field_platform_label":   "Platform",
         "field_region_label":     "Region",
+        "field_free_tier_label":  "Free Tier (GB, 0 = unlimited/not tracked)",
         "platform_r2_label":      "Cloudflare R2",
         "platform_s3_label":      "Generic S3-Compatible (AWS S3 / Backblaze B2 / MinIO, etc.)",
         "btn_cancel":  "  Cancel  ",
@@ -429,17 +441,24 @@ STRINGS = {
         "warn_missing_info_body":  "Please fill in all required fields.",
         "warn_bad_endpoint_title": "Invalid endpoint",
         "warn_bad_endpoint_body":  "The endpoint URL must start with http:// or https://.",
+        "warn_invalid_number_title": "Invalid number",
+        "warn_invalid_number_body":  "Please enter a number greater than or equal to 0.",
 
         "cred_dialog_title":    "S3 Bucket Credentials",
         "cred_dialog_subtitle": "Credentials are stored as user environment variables (keys DPAPI-encrypted) and never written to disk files. Each one is auto-probed for validity and accessible buckets after being added.",
         "cred_configured_label": "Configured credentials",
-        "cred_col_platform":    "Platform",
-        "cred_col_access_key":  "Access Key ID",
-        "cred_col_secret_key":  "Secret Access Key",
-        "cred_col_endpoint":    "Endpoint",
-        "cred_col_status":      "Status",
+        "cred_col_platform":       "Platform",
+        "cred_col_access_key":     "Access Key ID",
+        "cred_col_secret_key":     "Secret Access Key",
+        "cred_col_endpoint":       "Endpoint",
+        "cred_col_status":         "Status",
+        "cred_col_free_capacity":  "Free Tier",
+        "cred_col_usage":          "Current Usage",
+        "cred_col_usage_pct":      "Free Tier Used",
         "ctx_recheck":          "🔄  Re-verify",
         "ctx_delete_cred":      "🗑  Delete",
+        "ctx_edit_free_tier":   "✏️  Edit Free Tier…",
+        "edit_free_tier_dialog_title": "Edit Free Tier",
         "confirm_delete_cred_title": "Confirm Delete",
         "confirm_delete_cred_body":  "Delete this credential?\n\n{endpoint}",
         "add_cred_dialog_title": "Add Bucket Credential",
@@ -712,10 +731,11 @@ class S3Backend:
         body = resp.text[:600].strip()
         try:
             root = ET.fromstring(resp.content)
-            code = (root.findtext("{http://s3.amazonaws.com/doc/2006-03-01/}Code")
-                    or root.findtext("Code") or "")
-            msg  = (root.findtext("{http://s3.amazonaws.com/doc/2006-03-01/}Message")
-                    or root.findtext("Message") or body)
+            # Namespace-agnostic: different S3-compatible providers use different
+            # XML namespace URIs for what's otherwise the same response shape
+            # (e.g. Google Cloud Storage's XML API uses its own, not AWS's).
+            code = root.findtext("{*}Code") or root.findtext("Code") or ""
+            msg  = root.findtext("{*}Message") or root.findtext("Message") or body
             body = f"{code}: {msg}" if code else msg
         except Exception:
             pass
@@ -781,11 +801,13 @@ class S3Backend:
         headers  = self._auth_headers("GET", "")
         response = self._http("GET", url, headers=headers, timeout=30)
         self._raise_for_status(response, "list")
-        ns    = "{http://s3.amazonaws.com/doc/2006-03-01/}"
         root  = ET.fromstring(response.content)
         names = []
-        for item in root.findall(f"{ns}Buckets/{ns}Bucket"):
-            name = item.findtext(f"{ns}Name")
+        # Namespace-agnostic: providers vary in the XML namespace URI they use
+        # for what's otherwise the same ListAllMyBucketsResult shape (e.g.
+        # Google Cloud Storage's XML API uses its own, not AWS's).
+        for item in root.findall("{*}Buckets/{*}Bucket"):
+            name = item.findtext("{*}Name")
             if name:
                 names.append(name)
         return names
@@ -796,13 +818,12 @@ class S3Backend:
         headers  = self._auth_headers("GET", bucket)
         response = self._http("GET", url, headers=headers, timeout=30)
         self._raise_for_status(response, "list")
-        ns    = "{http://s3.amazonaws.com/doc/2006-03-01/}"
         root  = ET.fromstring(response.content)
         files = []
-        for item in root.findall(f"{ns}Contents"):
-            key   = item.findtext(f"{ns}Key")          or ""
-            size  = item.findtext(f"{ns}Size")         or "0"
-            mtime = item.findtext(f"{ns}LastModified") or ""
+        for item in root.findall("{*}Contents"):
+            key   = item.findtext("{*}Key")          or ""
+            size  = item.findtext("{*}Size")         or "0"
+            mtime = item.findtext("{*}LastModified") or ""
             if key:
                 files.append({
                     "key":           key,
@@ -860,14 +881,16 @@ class CredEntry:
     buckets once probed, since a single token can grant access to several)."""
 
     def __init__(self, cred_id: str, platform: str, access_key: str,
-                 secret_key: str, endpoint: str, region: str, lang: str = "en"):
-        self.id         = cred_id
-        self.platform   = platform
-        self.access_key = access_key
-        self.secret_key = secret_key
-        self.endpoint   = endpoint
-        self.region     = region
-        self.backend    = S3Backend(access_key, secret_key, endpoint, region=region, lang=lang)
+                 secret_key: str, endpoint: str, region: str,
+                 free_tier_gb: float = 0.0, lang: str = "en"):
+        self.id           = cred_id
+        self.platform     = platform
+        self.access_key   = access_key
+        self.secret_key   = secret_key
+        self.endpoint     = endpoint
+        self.region       = region
+        self.free_tier_gb = free_tier_gb   # 0 = unlimited/not tracked
+        self.backend      = S3Backend(access_key, secret_key, endpoint, region=region, lang=lang)
         self.buckets: list = []
         self.status     = "checking"
         self.status_msg = t(lang, "status_checking")
@@ -877,6 +900,7 @@ class CredEntry:
             "id": self.id, "platform": self.platform,
             "access_key": self.access_key, "secret_key": self.secret_key,
             "endpoint": self.endpoint, "region": self.region,
+            "free_tier_gb": self.free_tier_gb,
         }
 
 
@@ -972,15 +996,30 @@ class AddCredentialDialog(tk.Toplevel):
         )
         self._region_entry.pack(fill="x", ipady=7)
 
+        tk.Label(frm, text=t(lang, "field_free_tier_label"), bg=C["bg"], fg=C["fg"],
+                 font=FONT_B, anchor="w").pack(fill="x", pady=(10, 2))
+        self._free_tier_var = tk.StringVar(value="10")
+        free_tier_entry = tk.Entry(
+            frm, textvariable=self._free_tier_var,
+            bg=C["input_bg"], fg=C["fg"], insertbackground=C["fg"],
+            relief="flat", font=FONT, highlightthickness=1,
+            highlightcolor=C["accent"], highlightbackground=C["border"],
+        )
+        free_tier_entry.pack(fill="x", ipady=7)
+
         def _on_platform_change(_evt=None):
             platform = self._platform_map[self._platform_combo.get()]
             if platform == "r2":
                 self._region_var.set("auto")
                 self._region_entry.configure(state="disabled")
+                if self._free_tier_var.get() in ("", "0"):
+                    self._free_tier_var.set("10")
             else:
                 if self._region_var.get() in ("", "auto"):
                     self._region_var.set("us-east-1")
                 self._region_entry.configure(state="normal")
+                if self._free_tier_var.get() in ("", "10"):
+                    self._free_tier_var.set("0")
         self._platform_combo.bind("<<ComboboxSelected>>", _on_platform_change)
 
         btn_row = tk.Frame(self, bg=C["bg"])
@@ -1010,8 +1049,16 @@ class AddCredentialDialog(tk.Toplevel):
             messagebox.showwarning(t(lang, "warn_bad_endpoint_title"),
                                    t(lang, "warn_bad_endpoint_body"), parent=self)
             return
+        try:
+            free_tier_gb = float(self._free_tier_var.get().strip() or 0)
+            if free_tier_gb < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning(t(lang, "warn_invalid_number_title"),
+                                   t(lang, "warn_invalid_number_body"), parent=self)
+            return
         self.destroy()
-        self._on_submit(platform, ak, sk, ep, region)
+        self._on_submit(platform, ak, sk, ep, region, free_tier_gb)
 
 
 # ─── Credentials management dialog ─────────────────────────────────────────────
@@ -1064,16 +1111,20 @@ class CredentialsDialog(tk.Toplevel):
         table_frame = tk.Frame(self, bg=C["bg"])
         table_frame.pack(padx=24, fill="both", expand=True)
 
-        cols = ("platform", "access_key", "secret_key", "endpoint", "status")
+        cols = ("platform", "access_key", "secret_key", "endpoint", "status",
+                "free_capacity", "usage", "usage_pct")
         self._tree = ttk.Treeview(
             table_frame, columns=cols, show="headings", selectmode="browse", height=6,
         )
         for col, heading, width in [
-            ("platform",   t(lang, "cred_col_platform"),   90),
-            ("access_key", t(lang, "cred_col_access_key"), 130),
-            ("secret_key", t(lang, "cred_col_secret_key"), 110),
-            ("endpoint",   t(lang, "cred_col_endpoint"),   210),
-            ("status",     t(lang, "cred_col_status"),     170),
+            ("platform",      t(lang, "cred_col_platform"),      90),
+            ("access_key",    t(lang, "cred_col_access_key"),    130),
+            ("secret_key",    t(lang, "cred_col_secret_key"),    110),
+            ("endpoint",      t(lang, "cred_col_endpoint"),      190),
+            ("status",        t(lang, "cred_col_status"),        150),
+            ("free_capacity", t(lang, "cred_col_free_capacity"),  90),
+            ("usage",         t(lang, "cred_col_usage"),         100),
+            ("usage_pct",     t(lang, "cred_col_usage_pct"),     100),
         ]:
             self._tree.heading(col, text=heading)
             self._tree.column(col, width=width, minwidth=60, anchor="w")
@@ -1091,6 +1142,7 @@ class CredentialsDialog(tk.Toplevel):
         }
         self._ctx = tk.Menu(self, tearoff=0, **mk)
         self._ctx.add_command(label=t(lang, "ctx_recheck"), command=self._recheck_selected)
+        self._ctx.add_command(label=t(lang, "ctx_edit_free_tier"), command=self._edit_free_tier_selected)
         self._ctx.add_command(label=t(lang, "ctx_delete_cred"), command=self._delete_selected)
 
         btn_frame = tk.Frame(self, bg=C["bg"])
@@ -1108,19 +1160,33 @@ class CredentialsDialog(tk.Toplevel):
         return t(self.lang, "platform_r2_label") if platform == "r2" else t(self.lang, "platform_s3_label")
 
     def _refresh_table(self):
+        lang = self.lang
         self._tree.delete(*self._tree.get_children())
+        usage_by_cred = {}
+        for f in getattr(self._app, "_all_files", []):
+            cid = f["_cred"].id
+            usage_by_cred[cid] = usage_by_cred.get(cid, 0) + f["size"]
         for cred in self._app.creds:
+            usage_bytes = usage_by_cred.get(cred.id, 0)
+            if cred.free_tier_gb and cred.free_tier_gb > 0:
+                free_cap_str = f"{cred.free_tier_gb:g} GB"
+                pct_str = f"{usage_bytes / (cred.free_tier_gb * 1024 ** 3) * 100:.1f}%"
+            else:
+                free_cap_str = t(lang, "dash")
+                pct_str = t(lang, "dash")
             self._tree.insert(
                 "", "end", iid=cred.id,
                 values=(self._platform_label(cred.platform), _mask(cred.access_key),
-                        "●" * 8, cred.endpoint, cred.status_msg),
+                        "●" * 8, cred.endpoint, cred.status_msg,
+                        free_cap_str, _fmt_size(usage_bytes), pct_str),
             )
 
     def _add_credential(self):
         AddCredentialDialog(self, self.lang, self._on_new_credential)
 
-    def _on_new_credential(self, platform, ak, sk, ep, region):
-        entry = CredEntry(str(uuid.uuid4()), platform, ak, sk, ep, region, lang=self._app.lang)
+    def _on_new_credential(self, platform, ak, sk, ep, region, free_tier_gb):
+        entry = CredEntry(str(uuid.uuid4()), platform, ak, sk, ep, region,
+                           free_tier_gb=free_tier_gb, lang=self._app.lang)
         self._app.creds.append(entry)
         self._app.persist_credentials()
         self._refresh_table()
@@ -1164,6 +1230,66 @@ class CredentialsDialog(tk.Toplevel):
         entry = self._selected_entry()
         if entry:
             self._probe(entry)
+
+    def _edit_free_tier_selected(self):
+        entry = self._selected_entry()
+        if not entry:
+            return
+        lang = self.lang
+
+        dlg = tk.Toplevel(self)
+        dlg.title(t(lang, "edit_free_tier_dialog_title"))
+        dlg.resizable(False, False)
+        dlg.configure(bg=C["bg"])
+        dlg.grab_set()
+        dlg.update_idletasks()
+        pw = self.winfo_rootx() + self.winfo_width()  // 2
+        ph = self.winfo_rooty() + self.winfo_height() // 2
+        dlg.geometry(f"+{pw - 160}+{ph - 80}")
+
+        tk.Frame(dlg, bg=C["accent"], height=4).pack(fill="x")
+        tk.Label(dlg, text=t(lang, "edit_free_tier_dialog_title"),
+                 bg=C["bg"], fg=C["accent2"], font=FONT_B).pack(pady=(14, 6))
+        tk.Label(dlg, text=t(lang, "field_free_tier_label"),
+                 bg=C["bg"], fg=C["fg"], font=FONT, anchor="w").pack(padx=24, fill="x")
+
+        val_var = tk.StringVar(value=f"{entry.free_tier_gb:g}")
+        ent = tk.Entry(
+            dlg, textvariable=val_var,
+            bg=C["input_bg"], fg=C["fg"], insertbackground=C["fg"],
+            relief="flat", font=FONT, highlightthickness=1,
+            highlightcolor=C["accent"], highlightbackground=C["border"],
+        )
+        ent.pack(padx=24, pady=(4, 0), fill="x", ipady=6)
+        ent.focus_set()
+
+        def _confirm():
+            try:
+                gb = float(val_var.get().strip() or 0)
+                if gb < 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showwarning(t(lang, "warn_invalid_number_title"),
+                                       t(lang, "warn_invalid_number_body"), parent=dlg)
+                return
+            entry.free_tier_gb = gb
+            self._app.persist_credentials()
+            dlg.destroy()
+            self._refresh_table()
+
+        ent.bind("<Return>", lambda _: _confirm())
+        btn_row = tk.Frame(dlg, bg=C["bg"])
+        btn_row.pack(pady=16)
+        tk.Button(btn_row, text=t(lang, "btn_confirm"), command=_confirm,
+                  bg=C["accent"], fg="#ffffff", font=FONT_B,
+                  relief="flat", cursor="hand2", padx=12, pady=6, bd=0,
+                  activebackground=C["accent2"], activeforeground="#ffffff",
+                  ).pack(side="left", padx=8)
+        tk.Button(btn_row, text=t(lang, "btn_cancel"), command=dlg.destroy,
+                  bg=C["btn_bg"], fg=C["fg2"], font=FONT,
+                  relief="flat", cursor="hand2", padx=12, pady=6, bd=0,
+                  ).pack(side="left", padx=8)
+        self.wait_window(dlg)
 
     def _delete_selected(self):
         entry = self._selected_entry()
@@ -1554,7 +1680,8 @@ class S3ClientApp(tk.Tk):
             return
         self.creds = [
             CredEntry(e["id"], e["platform"], e["access_key"], e["secret_key"],
-                      e["endpoint"], e["region"], lang=self.lang)
+                      e["endpoint"], e["region"],
+                      free_tier_gb=e.get("free_tier_gb", 0.0), lang=self.lang)
             for e in entries
         ]
         self._probe_all_creds()
